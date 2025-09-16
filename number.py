@@ -57,7 +57,7 @@ def bootstrap_page(title, body_html):
     .form-control::placeholder { color:#cbd5e1; opacity:1; }
     .form-control:focus, .form-select:focus { border-color:#93c5fd; box-shadow:none; }
 
-    .text-muted, .small.text-muted { color:#e2e8f0 !important; }
+    .text-muted, .small.text-muted, .form-label { color:#f472b6 !important; }
 
     .log-box { max-height:40vh; overflow:auto; background:#0b1323; color:#e2e8f0; padding:1rem; border:1px solid #334155; border-radius:.5rem; }
   </style>
