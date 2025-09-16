@@ -309,9 +309,41 @@ def play(room_id):
         # 未紐付けならロビーへ誘導
         return redirect(url_for('room_lobby', room_id=room_id))
 
-    # まだ2人揃ってない場合
+    # まだ2人揃ってない場合はロビーに戻さず待機画面を表示
     if not (room['pname'][1] and room['pname'][2]):
-        return redirect(url_for('room_lobby', room_id=room_id))
+        l1 = url_for('join', room_id=room_id, player_id=1, _external=True)
+        l2 = url_for('join', room_id=room_id, player_id=2, _external=True)
+        p1 = room['pname'][1] or '未参加'
+        p2 = room['pname'][2] or '未参加'
+        wait_body = f"""
+<div class="card mb-3">
+  <div class="card-header">相手を待っています…</div>
+  <div class="card-body">
+    <p class="mb-2">このURLを相手に送って参加してもらってください。</p>
+    <div class="row g-2">
+      <div class="col-12 col-md-6">
+        <div class="p-2 rounded border border-secondary">
+          <div class="small text-muted mb-1">プレイヤー1用リンク</div>
+          <a href="{l1}">{l1}</a>
+          <div class="mt-1"><span class="badge bg-secondary">状態</span> {p1}</div>
+        </div>
+      </div>
+      <div class="col-12 col-md-6">
+        <div class="p-2 rounded border border-secondary">
+          <div class="small text-muted mb-1">プレイヤー2用リンク</div>
+          <a href="{l2}">{l2}</a>
+          <div class="mt-1"><span class="badge bg-secondary">状態</span> {p2}</div>
+        </div>
+      </div>
+    </div>
+    <div class="mt-3 d-flex gap-2">
+      <a class="btn btn-primary" href="{url_for('play', room_id=room_id)}">更新</a>
+      <a class="btn btn-outline-light" href="{url_for('room_lobby', room_id=room_id)}">ロビーへ</a>
+    </div>
+  </div>
+</div>
+"""
+        return bootstrap_page("相手待ち", wait_body)
 
     # 勝敗確定（end_roundへ）
     if room['winner'] is not None:
@@ -348,9 +380,22 @@ def play(room_id):
     c_available = (room['cooldown'][pid] == 0)
     hint_available = bool(room['available_hints'][pid]) or room['hint_choice_available'][pid]
 
-    # 自分視点のログ拡張（infoトラップ閲覧可なら相手の行動フル表示分も含める）
-    # ここでは「ログは全体共通」をシンプル表示
-    log_html = "".join(f"<li>{entry}</li>" for entry in room['actions'])
+    # 相手のフル行動は info トラップで閲覧権が付与された場合のみ、かつ発動時点以降を表示
+    filtered = []
+    cut = room['view_cut_index'][pid]
+    for idx, entry in enumerate(room['actions']):
+      if entry.startswith(f"{myname} "):
+        filtered.append(entry)
+        continue
+      if entry.startswith(f"{oppname} が g（予想）→"):
+        filtered.append(entry)
+        continue
+      if room['can_view'][pid] and (cut is None or idx >= cut) and entry.startswith(f"{oppname} "):
+        filtered.append(entry)
+        continue
+      # それ以外の相手の行動は隠す
+      
+    log_html = "".join(f"<li>{e}</li>" for e in filtered)
 
     # 自分の番フォーム
     my_turn_block = ""
@@ -569,32 +614,38 @@ def handle_guess(room, pid, guess):
 
 def handle_hint(room, pid, form):
     myname = room['pname'][pid]
-    choose_type = False
+    # 種類を明示選択したかどうか
+    chose_by_user = False
     if room['hint_choice_available'][pid] and form.get('confirm_choice'):
-        choose_type = True
+      chose_by_user = True
 
-    if choose_type:
-        hint_type = form.get('hint_type')
-        room['hint_choice_available'][pid] = False
+    if chose_by_user:
+      hint_type = form.get('hint_type')
+      room['hint_choice_available'][pid] = False
     else:
-        stock = room['available_hints'][pid]
-        if not stock:
-            push_log(room, "（このラウンドのヒントは出尽くしました）")
-            switch_turn(room, pid)
-            return redirect(url_for('play', room_id=get_current_room_id()))
-        hint_type = random.choice(stock)
-        stock.remove(hint_type)
+      stock = room['available_hints'][pid]
+      if not stock:
+        push_log(room, "（このラウンドのヒントは出尽くしました）")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+      hint_type = random.choice(stock)
+      stock.remove(hint_type)
 
     opp = 2 if pid == 1 else 1
     opp_secret = room['secret'][opp]
     hidden = room['hidden']
     if hint_type == '和':
-        val = opp_secret + hidden
+      val = opp_secret + hidden
     elif hint_type == '差':
-        val = abs(opp_secret - hidden)
+      val = abs(opp_secret - hidden)
     else:
-        val = opp_secret * hidden
-    push_log(room, f"{myname} が h（ヒント取得）{hint_type}＝{val}")
+      val = opp_secret * hidden
+
+    # ログ：数値は常に残す。種類は自分で選んだ時のみ付ける
+    if chose_by_user:
+      push_log(room, f"{myname} が h（ヒント取得）{hint_type}＝{val}")
+    else:
+      push_log(room, f"{myname} が h（ヒントを取得）＝{val}")
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
