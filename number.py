@@ -71,8 +71,8 @@ def init_game_state(allow_negative: bool, target_points: int):
         'available_hints': {1: ['和', '差', '積'], 2: ['和', '差', '積']},
         'hint_choice_available': {1: False, 2: False},  # set True for the second player each round
         'cooldown': {1: 0, 2: 0},  # cooldown turns for change-number action
-        'trap_kill': {1: set(), 2: set()},
-        'trap_info': {1: set(), 2: set()},
+        'trap_kill': {1: [], 2: []},
+        'trap_info': {1: [], 2: []},
         'pending_view': {1: False, 2: False},
         'can_view': {1: False, 2: False},
         'view_cut_index': {1: None, 2: None},
@@ -184,8 +184,8 @@ def full_game():
                 session['tries1'] = 0
                 session['tries2'] = 0
                 session['actions_log'] = []
-                session['trap_kill'] = {1: set(), 2: set()}
-                session['trap_info'] = {1: set(), 2: set()}
+                session['trap_kill'] = {1: [], 2: []}
+                session['trap_info'] = {1: [], 2: []}
                 session['pending_view'] = {1: False, 2: False}
                 session['can_view'] = {1: False, 2: False}
                 session['view_cut_index'] = {1: None, 2: None}
@@ -360,14 +360,14 @@ def handle_guess(player_id: int, guess: int):
         session['winner'] = player_id
         return redirect(url_for('full_game'))
     # Check kill traps (±1 immediate defeat)
-    kill_traps = session['trap_kill'][opponent_id]
+    kill_traps = set(session['trap_kill'][opponent_id])
     if any(abs(guess - t) <= 1 for t in kill_traps):
         session['actions_log'].append(f"{my_name} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）")
         # Opponent wins round
         session['winner'] = opponent_id
         return redirect(url_for('full_game'))
     # Check info traps (exact match)
-    info_traps = session['trap_info'][opponent_id]
+    info_traps = set(session['trap_info'][opponent_id])
     if guess in info_traps:
         # Activate pending view for the opponent
         session['pending_view'][opponent_id] = True
@@ -474,7 +474,7 @@ def handle_trap(player_id: int, form_data):
             tval = read_trap_value('trap_kill_value')
             # Only one kill trap; replace if exists
             my_kill.clear()
-            my_kill.add(tval)
+            my_kill.append(tval)
             session['actions_log'].append(f"{my_name} が killトラップを {tval} に設定")
         elif tkind == 'i':
             # Add up to 5 info traps
@@ -486,7 +486,8 @@ def handle_trap(player_id: int, form_data):
                     tval = read_trap_value(key)
                     values.append(tval)
             for v in values:
-                my_info.add(v)
+                if v not in my_info and len(my_info) < 5:
+                    my_info.append(v)
             session['actions_log'].append(f"{my_name} が infoトラップを {', '.join(str(v) for v in values)} に設定")
         else:
             session['actions_log'].append("⚠ 無効なトラップ種別が選択されました。")
@@ -517,10 +518,13 @@ def switch_turn_and_redirect(current_player: int):
     return redirect(url_for('full_game'))
 
 # ===== Entry point =====
-if __name__ == '__main__':
-    # Note: For production use, configure host/port via environment or command line
-    app.run(host='0.0.0.0', port=5000, debug=True)
+
+# Move @app.route('/') before the __main__ block
 @app.route('/')
 def index():
     # トップにアクセスされたら /full にリダイレクト
     return redirect(url_for('full_game'))
+
+if __name__ == '__main__':
+    # Note: For production use, configure host/port via environment or command line
+    app.run(host='0.0.0.0', port=5000, debug=True)
