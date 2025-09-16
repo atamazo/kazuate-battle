@@ -1,4 +1,5 @@
 from flask import Flask  
+from flask import session, request, redirect, url_for, render_template_string
 import random
 import getpass
 import os
@@ -9,12 +10,84 @@ NUM_MAX = 50     # プレイヤーが選べる数の最大
 HIDDEN_MIN = 1   # 誰にも知られない隠し数の最小
 HIDDEN_MAX = 30  # 誰にも知られない隠し数の最大（ソロと合わせて30）
 app = Flask(__name__)
+app.secret_key = 'imigawakaranai'  # 任意の文字列に置き換えてください
 
 @app.route("/")
 def index():
     return "<h1>デプロイ成功！</h1><p>このページが見えていれば Render 上ではOKです。</p>"
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
+# --- Web用ルートの開始 ---
+@app.route('/game', methods=['GET', 'POST'])
+def game_setup():
+    # ゲーム設定フォーム（プレイヤー名や先取ポイント）を表示・保存
+    if request.method == 'POST':
+        session['p1_name'] = request.form.get('p1_name', 'プレイヤー1')
+        session['p2_name'] = request.form.get('p2_name', 'プレイヤー2')
+        session['target_points'] = int(request.form.get('target_points', 1))
+        session['score1'] = 0
+        session['score2'] = 0
+        session['current_player'] = 1
+        session['round_no'] = 1
+        return redirect(url_for('secret_input'))
+    return render_template_string('''
+        <h2>ゲーム設定</h2>
+        <form method="post">
+            <label>プレイヤー1の名前: <input name="p1_name"></label><br/>
+            <label>プレイヤー2の名前: <input name="p2_name"></label><br/>
+            <label>先取ポイント: <input type="number" name="target_points" min="1" value="1"></label><br/>
+            <button type="submit">次へ</button>
+        </form>
+    ''')
+
+@app.route('/game/secrets', methods=['GET', 'POST'])
+def secret_input():
+    # 各プレイヤーが秘密の数字を入力するページ
+    if request.method == 'POST':
+        session['secret1'] = int(request.form['secret1'])
+        session['secret2'] = int(request.form['secret2'])
+        return redirect(url_for('guess'))
+    return render_template_string('''
+        <h2>秘密の数字を入力</h2>
+        <form method="post">
+            <label>{{ session["p1_name"] }} の秘密の数字: <input type="number" name="secret1" required></label><br/>
+            <label>{{ session["p2_name"] }} の秘密の数字: <input type="number" name="secret2" required></label><br/>
+            <button type="submit">開始</button>
+        </form>
+    ''')
+
+@app.route('/game/guess', methods=['GET', 'POST'])
+def guess():
+    # 予想処理。交互にターンを持ち、当たればスコアを加算
+    current_player = session.get('current_player', 1)
+    if request.method == 'POST':
+        guess_val = int(request.form['guess'])
+        if current_player == 1:
+            opponent_secret = session['secret2']
+            result = '正解！' if guess_val == opponent_secret else 'ハズレ'
+            session['score1'] += (guess_val == opponent_secret)
+            session['current_player'] = 2
+        else:
+            opponent_secret = session['secret1']
+            result = '正解！' if guess_val == opponent_secret else 'ハズレ'
+            session['score2'] += (guess_val == opponent_secret)
+            session['current_player'] = 1
+        return render_template_string('''
+            <p>{{ result }}</p>
+            <p>現在のスコア: {{ session["p1_name"] }} {{ session["score1"] }} - {{ session["score2"] }} {{ session["p2_name"] }}</p>
+            <a href="{{ url_for("guess") }}">続ける</a>
+        ''', result=result)
+    name = session['p1_name'] if current_player == 1 else session['p2_name']
+    return render_template_string('''
+        <h2>{{ session["round_no"] }}ラウンド目</h2>
+        <p>{{ name }} のターンです。</p>
+        <form method="post">
+            <input type="number" name="guess" required><br/>
+            <button type="submit">予想する</button>
+        </form>
+        <p>現在のスコア: {{ session["p1_name"] }} {{ session["score1"] }} - {{ session["score2"] }} {{ session["p2_name"] }}</p>
+    ''', name=name)
+# --- Web用ルートここまで ---
 if __name__ == "__main__":
         print("対戦モード！")
         print("ルール: 各プレイヤーは自分の秘密の数字を決め、相手の数を当てたら1ポイント！")
