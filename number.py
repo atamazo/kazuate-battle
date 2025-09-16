@@ -1,679 +1,522 @@
-from flask import Flask  
-from flask import session, request, redirect, url_for, render_template_string
+"""
+Flask implementation of the full two-player number guessing game with advanced
+features such as traps and hints. This skeleton illustrates how to port the
+console game logic into a web application. The implementation below sets up
+routes and data structures needed to support the game, but some sections
+require further development to fully replicate the original console game's
+functionality.
+
+Usage:
+  python number_full.py
+
+Then visit http://localhost:5000/full to play the advanced game in your
+browser.
+"""
+
+from flask import Flask, session, request, redirect, url_for, render_template_string
 import random
-import getpass
+import string
 import os
-from datetime import datetime
 
-NUM_MIN = 1      # プレイヤーが選べる数の最小
-NUM_MAX = 50     # プレイヤーが選べる数の最大
-HIDDEN_MIN = 1   # 誰にも知られない隠し数の最小
-HIDDEN_MAX = 30  # 誰にも知られない隠し数の最大（ソロと合わせて30）
+# ===== CONSTANTS =====
+NUM_MIN = 1
+NUM_MAX = 50
+HIDDEN_MIN = 1
+HIDDEN_MAX = 30
+
 app = Flask(__name__)
-app.secret_key = 'imigawakaranai'  # 任意の文字列に置き換えてください
+app.secret_key = 'imigawakaranai'
 
-@app.route("/")
-def index():
-    return "<h1>デプロイ成功！</h1><p>このページが見えていれば Render 上ではOKです。</p>"
+# ===== Utility functions =====
+
 def clear_screen():
+    """Clears the console. Unused in web version but kept for completeness."""
     os.system('cls' if os.name == 'nt' else 'clear')
-# --- Web用ルートの開始 ---
-@app.route('/game', methods=['GET', 'POST'])
-def game_setup():
-    # ゲーム設定フォーム（プレイヤー名や先取ポイント）を表示・保存
-    if request.method == 'POST':
-        session['p1_name'] = request.form.get('p1_name', 'プレイヤー1')
-        session['p2_name'] = request.form.get('p2_name', 'プレイヤー2')
-        session['target_points'] = int(request.form.get('target_points', 1))
-        session['score1'] = 0
-        session['score2'] = 0
-        session['current_player'] = 1
-        session['round_no'] = 1
-        return redirect(url_for('secret_input'))
-    return render_template_string('''
-        <h2>ゲーム設定</h2>
-        <form method="post">
-            <label>プレイヤー1の名前: <input name="p1_name"></label><br/>
-            <label>プレイヤー2の名前: <input name="p2_name"></label><br/>
-            <label>先取ポイント: <input type="number" name="target_points" min="1" value="1"></label><br/>
-            <button type="submit">次へ</button>
-        </form>
-    ''')
 
-@app.route('/game/secrets', methods=['GET', 'POST'])
-def secret_input():
-    # 各プレイヤーが秘密の数字を入力するページ
-    if request.method == 'POST':
-        session['secret1'] = int(request.form['secret1'])
-        session['secret2'] = int(request.form['secret2'])
-        return redirect(url_for('guess'))
-    return render_template_string('''
-        <h2>秘密の数字を入力</h2>
-        <form method="post">
-            <label>{{ session["p1_name"] }} の秘密の数字: <input type="number" name="secret1" required></label><br/>
-            <label>{{ session["p2_name"] }} の秘密の数字: <input type="number" name="secret2" required></label><br/>
-            <button type="submit">開始</button>
-        </form>
-    ''')
+# ===== Game state management =====
 
-@app.route('/game/guess', methods=['GET', 'POST'])
-def guess():
-    # 予想処理。交互にターンを持ち、当たればスコアを加算
-    current_player = session.get('current_player', 1)
-    if request.method == 'POST':
-        guess_val = int(request.form['guess'])
-        if current_player == 1:
-            opponent_secret = session['secret2']
-            result = '正解！' if guess_val == opponent_secret else 'ハズレ'
-            session['score1'] += (guess_val == opponent_secret)
-            session['current_player'] = 2
-        else:
-            opponent_secret = session['secret1']
-            result = '正解！' if guess_val == opponent_secret else 'ハズレ'
-            session['score2'] += (guess_val == opponent_secret)
-            session['current_player'] = 1
+# In the console version, many variables are kept in the global scope.
+# For the web version, we use the Flask session (for single-browser play)
+# or a rooms dictionary (for multi-device play) to store all game state.
+
+# For a single-browser advanced game, we will use session variables.
+
+# Helper to initialize a new game state in the session
+
+def init_game_state(allow_negative: bool, target_points: int):
+    """Initializes all game state variables in the session."""
+    if allow_negative:
+        eff_num_min, eff_num_max = -NUM_MAX, NUM_MAX
+        eff_hidden_min, eff_hidden_max = -HIDDEN_MAX, HIDDEN_MAX
+    else:
+        eff_num_min, eff_num_max = NUM_MIN, NUM_MAX
+        eff_hidden_min, eff_hidden_max = HIDDEN_MIN, HIDDEN_MAX
+
+    session.update({
+        'allow_negative': allow_negative,
+        'eff_num_min': eff_num_min,
+        'eff_num_max': eff_num_max,
+        'eff_hidden_min': eff_hidden_min,
+        'eff_hidden_max': eff_hidden_max,
+        'target_points': target_points,
+        'score1': 0,
+        'score2': 0,
+        'round_no': 1,
+        'turn': 1,  # 1 for player1's turn, 2 for player2's turn
+        # Secret numbers for each round
+        'secret1': None,
+        'secret2': None,
+        'hidden_secret': None,
+        # Hint and trap state per player
+        'available_hints': {1: ['和', '差', '積'], 2: ['和', '差', '積']},
+        'hint_choice_available': {1: False, 2: False},  # set True for the second player each round
+        'cooldown': {1: 0, 2: 0},  # cooldown turns for change-number action
+        'trap_kill': {1: set(), 2: set()},
+        'trap_info': {1: set(), 2: set()},
+        'pending_view': {1: False, 2: False},
+        'can_view': {1: False, 2: False},
+        'view_cut_index': {1: None, 2: None},
+        'skip_next_turn': {1: False, 2: False},
+        # Logs of actions (strings)
+        'actions_log': [],
+        # Flags indicating whether the secret numbers have been set for the round
+        'phase': 'setup',  # setup -> secrets1 -> secrets2 -> play -> end_round
+        'winner': None,
+    })
+
+# ===== Route for the full game =====
+
+@app.route('/full', methods=['GET', 'POST'])
+def full_game():
+    """
+    Main entry point for the advanced game. Depending on the phase stored in
+    session['phase'], this function renders the appropriate form and
+    processes input to advance the game state. The phases are:
+
+    setup    : collect names, target points, and negative-number option
+    secrets1 : player 1 inputs their secret number
+    secrets2 : player 2 inputs their secret number
+    play     : players take turns choosing actions (guess/hint/change/trap)
+    end_round: show round results and prepare for the next round or end match
+    
+    This skeleton implements the setup and secret input phases. The play
+    phase includes a simplified action choice and guess handling. To fully
+    replicate the original console game, extend the play phase logic to
+    implement hints, traps, cooldowns, and logs as described in the original
+    Python script.
+    """
+    phase = session.get('phase', 'setup')
+
+    # Phase: initial setup (names, negative option, target points)
+    if phase == 'setup':
+        if request.method == 'POST':
+            # Collect form data
+            p1_name = request.form.get('p1_name', 'プレイヤー1')
+            p2_name = request.form.get('p2_name', 'プレイヤー2')
+            target_points = int(request.form.get('target_points', 1))
+            allow_negative = request.form.get('allow_negative', 'n') == 'y'
+            # Save names and initialize game state
+            session['p1_name'] = p1_name
+            session['p2_name'] = p2_name
+            init_game_state(allow_negative, target_points)
+            # Second player may choose hint type once per round
+            session['hint_choice_available'][2] = True
+            # Proceed to secret number selection
+            session['phase'] = 'secrets1'
+            return redirect(url_for('full_game'))
+        # Render setup form
         return render_template_string('''
-            <p>{{ result }}</p>
-            <p>現在のスコア: {{ session["p1_name"] }} {{ session["score1"] }} - {{ session["score2"] }} {{ session["p2_name"] }}</p>
-            <a href="{{ url_for("guess") }}">続ける</a>
-        ''', result=result)
-    name = session['p1_name'] if current_player == 1 else session['p2_name']
-    return render_template_string('''
-        <h2>{{ session["round_no"] }}ラウンド目</h2>
-        <p>{{ name }} のターンです。</p>
-        <form method="post">
-            <input type="number" name="guess" required><br/>
-            <button type="submit">予想する</button>
-        </form>
-        <p>現在のスコア: {{ session["p1_name"] }} {{ session["score1"] }} - {{ session["score2"] }} {{ session["p2_name"] }}</p>
-    ''', name=name)
-# --- Web用ルートここまで ---
-if __name__ == "__main__":
-        print("対戦モード！")
-        print("ルール: 各プレイヤーは自分の秘密の数字を決め、相手の数を当てたら1ポイント！")
+            <h2>ゲーム初期設定</h2>
+            <form method="post">
+                <label>プレイヤー1の名前: <input name="p1_name"></label><br/>
+                <label>プレイヤー2の名前: <input name="p2_name"></label><br/>
+                <label>先取ポイント: <input type="number" name="target_points" min="1" value="3"></label><br/>
+                <label>負の数を許可しますか？ [y/n]:
+                    <select name="allow_negative"><option value="n">n</option><option value="y">y</option></select>
+                </label><br/>
+                <button type="submit">開始</button>
+            </form>
+        ''')
 
-        ans = input("このゲームで負の数（マイナス）を許可しますか？ [y/n]: ").strip().lower()
-        allow_negative = (ans == 'y')
-        if allow_negative:
-            eff_NUM_MIN, eff_NUM_MAX = -NUM_MAX, NUM_MAX
-            eff_HIDDEN_MIN, eff_HIDDEN_MAX = -HIDDEN_MAX, HIDDEN_MAX
-        else:
-            eff_NUM_MIN, eff_NUM_MAX = NUM_MIN, NUM_MAX
-            eff_HIDDEN_MIN, eff_HIDDEN_MAX = HIDDEN_MIN, HIDDEN_MAX
-
-        # ニックネーム設定（未入力ならデフォルト名）
-        p1_name = input("プレイヤー1のニックネームを入力（未入力なら プレイヤー1）: ").strip() or "プレイヤー1"
-        p2_name = input("プレイヤー2のニックネームを入力（未入力なら プレイヤー2）: ").strip() or "プレイヤー2"
-        print(f"対戦カード: {p1_name} vs {p2_name}")
-
-        # 先取ポイントを選択（1なら一発勝負）
-        while True:
-            s = input("何ラウンド先取で勝ちにしますか？（例：3 / 1なら一発勝負）: ").strip()
-            try:
-                target_points = int(s)
-                if target_points >= 1:
-                    break
-            except ValueError:
-                pass
-            print("⚠ 1以上の整数で入力してください。")
-
-        score1 = 0
-        score2 = 0
-        round_no = 1
-
-
-
-        # 自分ターンに［自分の行動履歴］と［自分のトラップ］を表示するか（各プレイヤー個別設定）
-        while True:
-            ans = input(f"{p1_name} のターンで［自分の行動履歴］と［自分のトラップ］を表示しますか？ [y/n]: ").strip().lower()
-            if ans in ("y", "n"):
-                break
-            print("⚠ y または n を入力してください。")
-        p1_show_self_panel = (ans == 'y')
-        while True:
-            ans = input(f"{p2_name} のターンで［自分の行動履歴］と［自分のトラップ］を表示しますか？ [y/n]: ").strip().lower()
-            if ans in ("y", "n"):
-                break
-            print("⚠ y または n を入力してください。")
-        p2_show_self_panel = (ans == 'y')
-
-
-        starter = 1  # 初回の先行はプレイヤー1。以降は「前ラウンドで負けた方」が先行
-
-        while score1 < target_points and score2 < target_points:
-            clear_screen()
-            print(f"===== ラウンド {round_no} 開始 =====")
-            print(f"★ スコア: {p1_name} {score1} - {score2} {p2_name}  (先に {target_points} 点で勝利)\n")
-
-            # 誰にも見えないランダム数字（毎ラウンド更新）
-            hidden_secret = random.randint(eff_HIDDEN_MIN, eff_HIDDEN_MAX)
-
-            # 各プレイヤーが自分で秘密の数字を決める（見える入力）
-            while True:
-                try:
-                    s = input(f"{p1_name}、自分の秘密の数字を{eff_NUM_MIN}〜{eff_NUM_MAX}で決めて入力してください: ")
-                    secret1 = int(s)
-                    if eff_NUM_MIN <= secret1 <= eff_NUM_MAX:
-                        break
-                except ValueError:
-                    pass
-                print(f"⚠ {eff_NUM_MIN}〜{eff_NUM_MAX}の整数で入力してください。")
-            input(f"▶ {p2_name} に交代（Enterで画面を隠す）")
-            clear_screen()
-
-            while True:
-                try:
-                    s = input(f"{p2_name}、自分の秘密の数字を{eff_NUM_MIN}〜{eff_NUM_MAX}で決めて入力してください: ")
-                    secret2 = int(s)
-                    if eff_NUM_MIN <= secret2 <= eff_NUM_MAX:
-                        break
-                except ValueError:
-                    pass
-                print(f"⚠ {eff_NUM_MIN}〜{eff_NUM_MAX}の整数で入力してください。")
-            input("▶ ゲーム開始！（Enterで画面を隠す）")
-            # ここで対戦カードを再掲しても良い
-            clear_screen()
-
-            tries1 = 0
-            tries2 = 0
-
-            actions_log_all = []  # 全行動を記録する（履歴表示やinfoトラップ用）
-
-            # ラウンド内のみ有効なトラップ数字（プレイヤーごと・種類別）
-            # A: 即負けトラップ（踏むと相手が即敗北）
-            trap1_kill_set = set()
-            trap2_kill_set = set()
-            # B: 情報トラップ（踏むと設置者が相手の行動履歴を見られる）
-            trap1_info_set = set()
-            trap2_info_set = set()
-
-            # 情報トラップ発動後の閲覧フラグ
-            # active: 実際に閲覧可 / pending: 次の自分のターン開始時にactiveへ昇格
-            can_view_opponent_full_history_p1 = False
-            can_view_opponent_full_history_p2 = False
-            pending_view_opponent_full_history_p1 = False
-            pending_view_opponent_full_history_p2 = False
-            # 情報トラップの可視開始インデックス（actions_log_all の何件目以降を見せるか）
-            view_cut_index_p1 = None
-            view_cut_index_p2 = None
-
-            # 近接（±5）命中で次ターンをスキップするフラグ
-            skip_next_turn_p1 = False
-            skip_next_turn_p2 = False
-
-            # ログ追加ヘルパー（全員共通のフルログのみ）
-            def append_log(entry: str, pid: int):
-                # 常に記録（全員共通のフルログ）
-                actions_log_all.append(entry)
-
-            cooldown1 = 0  # プレイヤー1の c 行動のクールダウン（自分の番の回数で数える）
-            cooldown2 = 0  # プレイヤー2の c 行動のクールダウン
-            if starter == 1:
-                # 先行: P1 / 後攻: P2 → 後攻のみ種類指定可
-                p1_hint_choice_available = False
-                p2_hint_choice_available = True
+    # Phase: player 1 inputs their secret number
+    if phase == 'secrets1':
+        if request.method == 'POST':
+            secret1 = int(request.form['secret1'])
+            # Validate input
+            eff_min = session['eff_num_min']
+            eff_max = session['eff_num_max']
+            if eff_min <= secret1 <= eff_max:
+                session['secret1'] = secret1
+                session['phase'] = 'secrets2'
+                return redirect(url_for('full_game'))
             else:
-                # 先行: P2 / 後攻: P1 → 後攻のみ種類指定可
-                p1_hint_choice_available = True
-                p2_hint_choice_available = False
+                msg = f'{eff_min}〜{eff_max}の整数を入力してください。'
+                # Show error message with form again
+                return render_template_string('''
+                    <p style="color:red;">{{msg}}</p>
+                    <form method="post">
+                        <label>{{ p1_name }} の秘密の数字 ({{ eff_min }}-{{ eff_max }}):
+                            <input type="number" name="secret1" required></label><br/>
+                        <button type="submit">次へ</button>
+                    </form>
+                ''', msg=msg, p1_name=session['p1_name'], eff_min=eff_min, eff_max=eff_max)
+        # Render form to input player 1's secret number
+        return render_template_string('''
+            <h2>{{ p1_name }} の秘密の数字を決めてください</h2>
+            <form method="post">
+                <label>秘密の数字 ({{ eff_min }}-{{ eff_max }}):
+                    <input type="number" name="secret1" required></label><br/>
+                <button type="submit">次へ</button>
+            </form>
+        ''', p1_name=session['p1_name'], eff_min=session['eff_num_min'], eff_max=session['eff_num_max'])
 
-            available_hints_p1 = ["和", "差", "積"]
-            available_hints_p2 = ["和", "差", "積"]
+    # Phase: player 2 inputs their secret number and hidden secret is generated
+    if phase == 'secrets2':
+        if request.method == 'POST':
+            secret2 = int(request.form['secret2'])
+            eff_min = session['eff_num_min']
+            eff_max = session['eff_num_max']
+            if eff_min <= secret2 <= eff_max:
+                session['secret2'] = secret2
+                # Generate hidden secret for this round
+                session['hidden_secret'] = random.randint(session['eff_hidden_min'], session['eff_hidden_max'])
+                # Initialize per-round variables
+                session['tries1'] = 0
+                session['tries2'] = 0
+                session['actions_log'] = []
+                session['trap_kill'] = {1: set(), 2: set()}
+                session['trap_info'] = {1: set(), 2: set()}
+                session['pending_view'] = {1: False, 2: False}
+                session['can_view'] = {1: False, 2: False}
+                session['view_cut_index'] = {1: None, 2: None}
+                session['skip_next_turn'] = {1: False, 2: False}
+                session['cooldown'] = {1: 0, 2: 0}
+                session['available_hints'] = {1: ['和','差','積'], 2: ['和','差','積']}
+                session['hint_choice_available'] = {1: False, 2: True}
+                session['winner'] = None
+                session['phase'] = 'play'
+                return redirect(url_for('full_game'))
+            else:
+                msg = f'{eff_min}〜{eff_max}の整数を入力してください。'
+                return render_template_string('''
+                    <p style="color:red;">{{msg}}</p>
+                    <form method="post">
+                        <label>{{ p2_name }} の秘密の数字 ({{ eff_min }}-{{ eff_max }}):
+                            <input type="number" name="secret2" required></label><br/>
+                        <button type="submit">次へ</button>
+                    </form>
+                ''', msg=msg, p2_name=session['p2_name'], eff_min=eff_min, eff_max=eff_max)
+        # Render form to input player 2's secret number
+        return render_template_string('''
+            <h2>{{ p2_name }} の秘密の数字を決めてください</h2>
+            <form method="post">
+                <label>秘密の数字 ({{ eff_min }}-{{ eff_max }}):
+                    <input type="number" name="secret2" required></label><br/>
+                <button type="submit">開始</button>
+            </form>
+        ''', p2_name=session['p2_name'], eff_min=session['eff_num_min'], eff_max=session['eff_num_max'])
 
-            winner = None
+    # Phase: play - players take turns choosing actions
+    if phase == 'play':
+        # If round winner is already determined, go to end_round
+        if session.get('winner'):
+            session['phase'] = 'end_round'
+            return redirect(url_for('full_game'))
 
-            def player_turn(player_id):
-                global secret1, secret2, tries1, tries2, winner, cooldown1, cooldown2, p1_hint_choice_available, p2_hint_choice_available
-                global trap1_kill_set, trap2_kill_set, trap1_info_set, trap2_info_set
-                global can_view_opponent_full_history_p1, can_view_opponent_full_history_p2
-                global pending_view_opponent_full_history_p1, pending_view_opponent_full_history_p2
-                global view_cut_index_p1, view_cut_index_p2
-                global skip_next_turn_p1, skip_next_turn_p2
-                if player_id == 1:
-                    my_name = p1_name
-                    opp_name = p2_name
-                    opponent_secret = secret2
-                    my_hints = available_hints_p1
-                else:
-                    my_name = p2_name
-                    opp_name = p1_name
-                    opponent_secret = secret1
-                    my_hints = available_hints_p2
+        # Determine whose turn and check if their turn is skipped
+        player_id = session['turn']
+        # If skip flag is set, skip this player's turn once
+        if session['skip_next_turn'][player_id]:
+            session['skip_next_turn'][player_id] = False
+            # Log the skipped turn
+            session['actions_log'].append(f"{session['p1_name'] if player_id==1 else session['p2_name']} のターンは近接トラップ効果でスキップ")
+            # Switch turn
+            session['turn'] = 2 if player_id == 1 else 1
+            return redirect(url_for('full_game'))
 
-                # 情報トラップ効果の発動タイミング：
-                # 相手が引っかかった “次の自分のターン開始時” に有効化
-                if player_id == 1 and pending_view_opponent_full_history_p1:
-                    can_view_opponent_full_history_p1 = True
-                    pending_view_opponent_full_history_p1 = False
-                if player_id == 2 and pending_view_opponent_full_history_p2:
-                    can_view_opponent_full_history_p2 = True
-                    pending_view_opponent_full_history_p2 = False
+        # Handle form submission: action choice and subsequent action
+        if request.method == 'POST':
+            action = request.form['action']
+            if action == 'g':
+                # Guess action: handle guess logic including traps and win condition
+                guess_val = int(request.form['guess'])
+                return handle_guess(player_id, guess_val)
+            elif action == 'h':
+                # Hint action
+                return handle_hint(player_id, request.form)
+            elif action == 'c':
+                # Change number action
+                return handle_change(player_id, int(request.form['new_secret']))
+            elif action == 't':
+                # Set trap action
+                return handle_trap(player_id, request.form)
 
-                # 自分のターン開始時にクールダウンを1減らす
-                if player_id == 1:
-                    if cooldown1 > 0:
-                        cooldown1 -= 1
-                    c_available = (cooldown1 == 0)
-                else:
-                    if cooldown2 > 0:
-                        cooldown2 -= 1
-                    c_available = (cooldown2 == 0)
+        # Prepare data for rendering the play page
+        p1_name = session['p1_name']
+        p2_name = session['p2_name']
+        name = p1_name if player_id == 1 else p2_name
+        opponent_name = p2_name if player_id == 1 else p1_name
+        eff_min = session['eff_num_min']
+        eff_max = session['eff_num_max']
+        # Determine available actions based on cooldown/hints
+        c_available = session['cooldown'][player_id] == 0
+        hint_available = bool(session['available_hints'][player_id]) or session['hint_choice_available'][player_id]
+        return render_template_string('''
+            <h2>{{ round_no }} ラウンド目</h2>
+            <p>現在のスコア: {{ p1_name }} {{ score1 }} - {{ score2 }} {{ p2_name }}</p>
+            <p>{{ name }} のターンです。</p>
+            <h3>アクションを選んでください</h3>
+            <form method="post">
+                <select name="action" onchange="this.form.submit();">
+                    <option disabled selected>--選択してください--</option>
+                    <option value="g">相手の数を当てる</option>
+                    {% if hint_available %}<option value="h">ヒントをもらう</option>{% endif %}
+                    {% if c_available %}<option value="c">自分の数を変更</option>{% endif %}
+                    <option value="t">トラップを仕掛ける</option>
+                </select>
+            </form>
+            <h3>アクション履歴</h3>
+            <ul>
+                {% for entry in actions_log %}
+                  <li>{{ entry }}</li>
+                {% endfor %}
+            </ul>
+        ''', name=name, p1_name=p1_name, p2_name=p2_name,
+           score1=session['score1'], score2=session['score2'], round_no=session['round_no'],
+           hint_available=hint_available, c_available=c_available, actions_log=session['actions_log'])
 
-                # 近接トラップ（±5）命中ペナルティ：このプレイヤーの次ターンをスキップ
-                if player_id == 1 and skip_next_turn_p1:
-                    skip_next_turn_p1 = False
-                    print("⏭ 近接トラップの効果でこのターンはスキップされます。")
-                    append_log(f"{my_name} のターンは近接トラップ効果でスキップ", player_id)
-                    return
-                if player_id == 2 and skip_next_turn_p2:
-                    skip_next_turn_p2 = False
-                    print("⏭ 近接トラップの効果でこのターンはスキップされます。")
-                    append_log(f"{my_name} のターンは近接トラップ効果でスキップ", player_id)
-                    return
+    # Phase: end of round - display results and allow continuation or match end
+    if phase == 'end_round':
+        p1_name = session['p1_name']
+        p2_name = session['p2_name']
+        p1_score = session['score1']
+        p2_score = session['score2']
+        # Check if match is over
+        target = session['target_points']
+        match_over = p1_score >= target or p2_score >= target
+        if request.method == 'POST':
+            # Prepare next round or finish match
+            if match_over:
+                # Reset session for a new game (or redirect to setup)
+                final_message = f"マッチ終了! {p1_name} {p1_score} - {p2_score} {p2_name}"
+                session.clear()
+                return final_message
+            else:
+                # Increment round number, reset secrets, flip starting player (loser starts)
+                session['round_no'] += 1
+                session['secret1'] = None
+                session['secret2'] = None
+                session['hidden_secret'] = None
+                session['phase'] = 'secrets1'
+                # Loser starts next round
+                session['turn'] = 2 if session['winner'] == 1 else 1
+                return redirect(url_for('full_game'))
+        # Show round summary
+        return render_template_string('''
+            <h2>ラウンド {{ round_no }} の結果</h2>
+            <p>勝者: {{ winner_name }} ({{ tries }} 回で当てました)</p>
+            <p>このラウンドの数: {{ p1_name }}={{ secret1 }}, {{ p2_name }}={{ secret2 }}, 隠し数={{ hidden_secret }}</p>
+            <p>現在のスコア: {{ p1_name }} {{ score1 }} - {{ score2 }} {{ p2_name }}</p>
+            {% if match_over %}
+              <form method="post">
+                <button type="submit">マッチ終了</button>
+              </form>
+            {% else %}
+              <form method="post">
+                <button type="submit">次のラウンドへ</button>
+              </form>
+            {% endif %}
+        ''', round_no=session['round_no'], winner_name=session['p1_name'] if session['winner']==1 else session['p2_name'],
+           tries=session['tries1'] if session['winner']==1 else session['tries2'],
+           secret1=session['secret1'], secret2=session['secret2'], hidden_secret=session['hidden_secret'],
+           p1_name=p1_name, p2_name=p2_name, score1=p1_score, score2=p2_score, match_over=match_over)
 
-                print(f"［範囲］選べる数: {eff_NUM_MIN}〜{eff_NUM_MAX} / 隠し数: {eff_HIDDEN_MIN}〜{eff_HIDDEN_MAX}")
+    # Default fallback
+    return redirect(url_for('full_game'))
 
-                # 自分の行動履歴と、相手が g（予想）した内容を表示
-                my_hist = [e for e in actions_log_all if e.startswith(f"{my_name} ")]
-                opp_guess_hist = [e for e in actions_log_all if e.startswith(f"{opp_name} が g（予想）→")]
+# ===== Helper functions to handle actions =====
 
-                # 自分の行動履歴と自分のトラップの表示はプレイヤーごとの設定に従う
-                my_show_panel = p1_show_self_panel if player_id == 1 else p2_show_self_panel
-                if my_show_panel:
-                    # 自分の現在の秘密の数を表示
-                    my_secret_now = secret1 if player_id == 1 else secret2
-                    print(f"［自分の数］{my_secret_now}")
-                    print("［自分の行動履歴］")
-                    if my_hist:
-                        prefix = f"{my_name} が "
-                        for e in my_hist:
-                            shown = e[len(prefix):] if e.startswith(prefix) else e
-                            print(" -", shown)
-                    else:
-                        print(" - （まだ行動なし）")
-                
-                print("［相手の予想履歴（あなたに対して）］")
-                if opp_guess_hist:
-                    for e in opp_guess_hist:
-                        print(" -", e)
-                else:
-                    print(" - （まだ予想なし）")
 
-                # 情報トラップが発動済みなら、相手の行動履歴（フル）を表示
-                if (player_id == 1 and can_view_opponent_full_history_p1) or (player_id == 2 and can_view_opponent_full_history_p2):
-                    # 可視開始位置（トラップ発動時点）以降のみを表示
-                    cut = view_cut_index_p1 if player_id == 1 else view_cut_index_p2
-                    filtered = []
-                    guess_prefix = f"{opp_name} が g（予想）→"
-                    for idx, e in enumerate(actions_log_all):
-                        if e.startswith(f"{opp_name} ") and (cut is None or idx >= cut):
-                            # 予想（g）はすでに上の "相手の予想履歴" で表示するので、ここでは除外
-                            if e.startswith(guess_prefix):
-                                continue
-                            filtered.append(e)
-                    print("［相手の行動履歴（フル）］")
-                    if filtered:
-                        for e in filtered:
-                            print(" -", e)
-                    else:
-                        print(" - （まだ行動なし）")
-
-                if my_show_panel:
-                    # 自分のトラップ（A=即負け / B=情報）を自分だけに表示
-                    if player_id == 1:
-                        my_kill = sorted(trap1_kill_set)
-                        my_info = sorted(trap1_info_set)
-                    else:
-                        my_kill = sorted(trap2_kill_set)
-                        my_info = sorted(trap2_info_set)
-                    if not my_kill and not my_info:
-                        print("［自分のトラップ］未設定")
-                    else:
-                        k_txt = ", ".join(str(x) for x in my_kill) if my_kill else "なし"
-                        i_txt = ", ".join(str(x) for x in my_info) if my_info else "なし"
-                        print(f"［自分のトラップ］A即負け=({k_txt}) / B情報=({i_txt})")
-
-                while True:
-                    suffix = "（使用不可" + ("" if player_id == 1 else "") + ")" if not c_available else ""
-                    action = input(
-                        f"{my_name}の行動を選んでください [g=相手の数を当てる / h=ヒントをもらう / c=自分の数を変更{ '（今は使用不可）' if not c_available else ''} / t=トラップを仕掛ける]: "
-                    ).strip().lower()
-                    if action in ("g", "h", "c", "t"):
-                        if action == "c" and not c_available:
-                            print("⚠ 今は c は使えません（最近使用したためクールダウン中）。別の行動を選んでください。")
-                            continue
-                        break
-                    print("⚠ g / h / c / t のいずれかを入力してください。")
-
-                if action == "g":
-                    # 予想のみ（外れでもヒントは出ない）
-                    while True:
-                        try:
-                            s = input(f"{my_name}、{opp_name}の秘密の数字を予想して入力してください（{eff_NUM_MIN}〜{eff_NUM_MAX}）: ")
-                            guess = int(s)
-                            if eff_NUM_MIN <= guess <= eff_NUM_MAX:
-                                break
-                        except ValueError:
-                            pass
-                        print(f"⚠ {eff_NUM_MIN}〜{eff_NUM_MAX}の整数で入力してください。")
-                    if player_id == 1:
-                        tries1 += 1
-                    else:
-                        tries2 += 1
-
-                    # まずは“正解”を最優先：当てたら即勝利（トラップより優先）
-                    if guess == opponent_secret:
-                        append_log(f"{my_name} が g（予想）→ {guess}（正解！相手は即死）", player_id)
-                        winner = player_id
-                        return
-
-                    # 先にトラップ判定（kill=±1即死, ±5スキップ / info）
-                    opp_kill = trap2_kill_set if player_id == 1 else trap1_kill_set
-                    opp_info = trap2_info_set if player_id == 1 else trap1_info_set
-
-                    # killトラップ：±1 で即死
-                    if any(abs(guess - k) <= 1 for k in opp_kill):
-                        append_log(f"{my_name} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）", player_id)
-                        winner = 2 if player_id == 1 else 1
-                        print("💥 即負けトラップ（±1）命中！ このラウンドは相手の勝利！")
-                        return
-
-                    # infoトラップ（可視化は“次の自分のターンから”、可視範囲はこの瞬間以降）
-                    if guess in opp_info:
-                        if player_id == 1:
-                            pending_view_opponent_full_history_p2 = True
-                            view_cut_index_p2 = len(actions_log_all)
-                        else:
-                            pending_view_opponent_full_history_p1 = True
-                            view_cut_index_p1 = len(actions_log_all)
-                        print("📜 情報トラップ発動！ 相手は“次の自分のターンから”、この瞬間以降のあなたの行動履歴が見られるようになる。")
-                        append_log(f"{my_name} が g（予想）→ {guess}（情報トラップ発動）", player_id)
-                        # 即死ではないので処理は続行
-
-                    # killトラップ：±5 で次の自分ターンをスキップ（ただし±1は上で即死済み）
-                    if any(abs(guess - k) <= 5 for k in opp_kill):
-                        if player_id == 1:
-                            skip_next_turn_p1 = True
-                        else:
-                            skip_next_turn_p2 = True
-                        append_log(f"{my_name} が g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）", player_id)
-                        print("⏭ 近接トラップ（±5）に触れた！ 次の自分のターンはスキップされます。")
-                        # ハズレ処理と二重に出さないため、ここでターン終了
-                        return
-
-                    # 通常のハズレ
-                    append_log(f"{my_name} が g（予想）→ {guess}（ハズレ）", player_id)
-                    print("はずれ……！ このターンはここまで。")
-                    return
-                elif action == "h":
-                    # ヒントを取得：自分で種類指定なら重複OK＆在庫消費なし／ランダムなら在庫消費
-                    choose_type = False
-                    # このラウンドの後攻のみ、各ラウンド1回だけ種類指定可
-                    if player_id == 1 and p1_hint_choice_available:
-                        while True:
-                            ans = input(f"{p1_name} はこのラウンド1回だけヒントの種類を指定できます。指定しますか？ [y/n]: ").strip().lower()
-                            if ans in ("y", "n"):
-                                break
-                            print("⚠ y または n を入力してください。")
-                        if ans == "y":
-                            choose_type = True
-                    if player_id == 2 and p2_hint_choice_available:
-                        while True:
-                            ans = input(f"{p2_name} はこのラウンド1回だけヒントの種類を指定できます。指定しますか？ [y/n]: ").strip().lower()
-                            if ans in ("y", "n"):
-                                break
-                            print("⚠ y または n を入力してください。")
-                        if ans == "y":
-                            choose_type = True
-
-                    if choose_type:
-                        while True:
-                            t = input("ヒントの種類を選んでください [w=和 / s=差 / p=積]: ").strip().lower()
-                            mapping = {"w": "和", "s": "差", "p": "積"}
-                            if t in mapping:
-                                hint_type = mapping[t]
-                                if player_id == 1:
-                                    p1_hint_choice_available = False
-                                else:
-                                    p2_hint_choice_available = False
-                                chose_by_user = True
-                                break
-                            print("⚠ w/s/p のいずれかを入力してください。")
-                    else:
-                        # ランダム：在庫消費（在庫なければ出せない）
-                        my_stock = available_hints_p1 if player_id == 1 else available_hints_p2
-                        if not my_stock:
-                            print("（このラウンドのヒントは出尽くしました）")
-                            return
-                        hint_type = random.choice(my_stock)
-                        my_stock.remove(hint_type)
-                        chose_by_user = False
-
-                    print("🤔 ヒント！")
-                    if hint_type == "和":
-                        val = opponent_secret + hidden_secret
-                    elif hint_type == "差":
-                        val = abs(opponent_secret - hidden_secret)
-                    else:
-                        val = opponent_secret * hidden_secret
-                    print(f"  {val}")
-
-                    # ログ：数値は常に残す。種類は自分で選んだ時のみ付ける
-                    if chose_by_user:
-                        append_log(f"{my_name} が h（ヒント取得）{hint_type}＝{val}", player_id)
-                    else:
-                        append_log(f"{my_name} が h（ヒントを取得）＝{val}", player_id)
-                    return
-                elif action == "t":
-                    # トラップ設定：まず種類を選ぶ（kill=1個、info=複数段階で最大5個固定／編集なし）
-                    my_secret_now = secret1 if player_id == 1 else secret2
-                    if player_id == 1:
-                        my_kill = trap1_kill_set
-                        my_info = trap1_info_set
-                    else:
-                        my_kill = trap2_kill_set
-                        my_info = trap2_info_set
-
-                    # 種類選択（y/n同様に厳密受付）
-                    while True:
-                        tkind = input("どのトラップにしますか？ [k=kill（即負け） / i=info（情報）]: ").strip().lower()
-                        if tkind in ("k", "i"):
-                            break
-                        print("⚠ k または i を入力してください。")
-
-                    def read_trap_value(prompt: str) -> int:
-                        while True:
-                            try:
-                                s2 = input(prompt)
-                                tval = int(s2)
-                                if eff_NUM_MIN <= tval <= eff_NUM_MAX:
-                                    # 自分の秘密の数と同じ値は不可
-                                    if tval == my_secret_now:
-                                        print("⚠ 自分の秘密の数と同じ数字はトラップにできません。")
-                                        continue
-                                    # マイナス許可時は、絶対値が自分の数と同じ値も不可（例：自分=5 → 5/-5はNG）
-                                    if allow_negative and abs(tval) == abs(my_secret_now):
-                                        print("⚠ 負の数ありモードでは、自分の数と絶対値が同じ数字はトラップにできません。")
-                                        continue
-                                    return tval
-                            except ValueError:
-                                pass
-                            print(f"⚠ {eff_NUM_MIN}〜{eff_NUM_MAX}の整数で入力してください。")
-
-                    if tkind == 'k':
-                        # kill は各プレイヤー1個まで（再設定＝上書き可）
-                        tval = read_trap_value("killトラップの数字は何にしますか？: ")
-                        if len(my_kill) >= 1:
-                            old = next(iter(my_kill))
-                            my_kill.clear()
-                            my_kill.add(tval)
-                            cur_k = ", ".join(str(x) for x in sorted(my_kill)) or "なし"
-                            cur_i = ", ".join(str(x) for x in sorted(my_info)) or "なし"
-                            print(f"［OK］killを上書き：{old} → {tval}。現在：A即負け=({cur_k}) / B情報=({cur_i})")
-                            return
-                        else:
-                            my_kill.add(tval)
-                            cur_k = ", ".join(str(x) for x in sorted(my_kill)) or "なし"
-                            cur_i = ", ".join(str(x) for x in sorted(my_info)) or "なし"
-                            print(f"［OK］killを追加。現在：A即負け=({cur_k}) / B情報=({cur_i})")
-                            return
-
-                    # info は段階的に最大5個まで。編集不可。
-                    current = len(my_info)
-                    if current >= 5:
-                        print("⚠ 情報トラップは既に5個あります。これ以上は追加できません。")
-                        return
-
-                    # 0,1,2個 → 3個目までを埋めるプロンプト / 3,4個 → 5個目まで
-                    if current < 3:
-                        start_idx = current + 1
-                        end_idx = 3
-                        labels = {1: "一つ目は何にしますか？", 2: "二つ目は？", 3: "三つ目は？"}
-                        for i in range(start_idx, end_idx + 1):
-                            tval = read_trap_value(f"{labels[i]} ")
-                            my_info.add(tval)
-                    else:
-                        # 3個以上なら、4つ目→5つ目
-                        labels = {4: "四つ目は？", 5: "五つ目は？"}
-                        for i in range(current + 1, 6):
-                            if len(my_info) >= 5:
-                                break
-                            tval = read_trap_value(f"{labels[i]} ")
-                            my_info.add(tval)
-
-                    cur_k = ", ".join(str(x) for x in sorted(my_kill)) or "なし"
-                    cur_i = ", ".join(str(x) for x in sorted(my_info)) or "なし"
-                    print(f"［OK］infoを追加。現在：A即負け=({cur_k}) / B情報=({cur_i})")
-                    return
-                else:  # action == "c"
-                    while True:
-                        try:
-                            s = input(f"{my_name}、自分の秘密の数字を{eff_NUM_MIN}〜{eff_NUM_MAX}で再設定してください: ")
-                            new_val = int(s)
-                            if eff_NUM_MIN <= new_val <= eff_NUM_MAX:
-                                # 自分のトラップ（A/B）いずれかと同じ値には変更できない
-                                if player_id == 1:
-                                    my_all_traps = trap1_kill_set | trap1_info_set
-                                else:
-                                    my_all_traps = trap2_kill_set | trap2_info_set
-                                if new_val in my_all_traps:
-                                    print("⚠ その数字は現在のトラップに含まれています。別の数字を選んでください。")
-                                    continue
-                                if player_id == 1:
-                                    secret1 = new_val
-                                else:
-                                    secret2 = new_val
-                                break
-                        except ValueError:
-                            pass
-                        print(f"⚠ {eff_NUM_MIN}〜{eff_NUM_MAX}の整数で入力してください。")
-                    # c 使用後は次の自分の2ターンは使用不可
-                    if player_id == 1:
-                        cooldown1 = 2
-                        # 相手（P2）のヒント在庫をリセット
-                        available_hints_p2[:] = ["和", "差", "積"]
-                    else:
-                        cooldown2 = 2
-                        # 相手（P1）のヒント在庫をリセット
-                        available_hints_p1[:] = ["和", "差", "積"]
-                    append_log(f"{my_name} が c（自分の数を変更）→ {new_val}", player_id)
-                    return
-
-            # だれかが当てるまで続ける（先行は starter に従う）
-            while True:
-                if starter == 1:
-                    # プレイヤー1 → プレイヤー2 の順
-                    input(f"▶ {p1_name} の番です。{p2_name} は見ないでね！（Enterで続行）")
-                    clear_screen()
-                    player_turn(1)
-                    if winner is not None:
-                        score1 += 1
-                        print(f"🎉 ラウンド勝者：{p1_name}！ {tries1}回で当てたよ！")
-                        print(f"★ 現在のスコア: {p1_name} {score1} - {score2} {p2_name}\n")
-                        print("このラウンドの行動履歴:")
-                        for entry in actions_log_all:
-                            print(" -", entry)
-                        # ラウンドの答え（公開）
-                        print("\n［このラウンドの答え］")
-                        print(f"  {p1_name} の数: {secret1}")
-                        print(f"  {p2_name} の数: {secret2}")
-                        print(f"  誰も知らない数: {hidden_secret}")
-                        # 次ラウンドは負けた方（=プレイヤー2）が先行
-                        starter = 2
-                        input("次のラウンドへ（Enterで画面を隠す）")
-                        clear_screen()
-                        break
-
-                    input(f"▶ {p2_name} の番です。{p1_name} は見ないでね！（Enterで続行）")
-                    clear_screen()
-                    player_turn(2)
-                    if winner is not None:
-                        score2 += 1
-                        print(f"🎉 ラウンド勝者：{p2_name}！ {tries2}回で当てたよ！")
-                        print(f"★ 現在のスコア: {p1_name} {score1} - {score2} {p2_name}\n")
-                        print("このラウンドの行動履歴:")
-                        for entry in actions_log_all:
-                            print(" -", entry)
-                        # ラウンドの答え（公開）
-                        print("\n［このラウンドの答え］")
-                        print(f"  {p1_name} の数: {secret1}")
-                        print(f"  {p2_name} の数: {secret2}")
-                        print(f"  誰も知らない数: {hidden_secret}")
-                        # 次ラウンドは負けた方（=プレイヤー1）が先行
-                        starter = 1
-                        input("次のラウンドへ（Enterで画面を隠す）")
-                        clear_screen()
-                        break
-                else:
-                    # プレイヤー2 → プレイヤー1 の順
-                    input(f"▶ {p2_name} の番です。{p1_name} は見ないでね！（Enterで続行）")
-                    clear_screen()
-                    player_turn(2)
-                    if winner is not None:
-                        score2 += 1
-                        print(f"🎉 ラウンド勝者：{p2_name}！ {tries2}回で当てたよ！")
-                        print(f"★ 現在のスコア: {p1_name} {score1} - {score2} {p2_name}\n")
-                        print("このラウンドの行動履歴:")
-                        for entry in actions_log_all:
-                            print(" -", entry)
-                        # ラウンドの答え（公開）
-                        print("\n［このラウンドの答え］")
-                        print(f"  {p1_name} の数: {secret1}")
-                        print(f"  {p2_name} の数: {secret2}")
-                        print(f"  誰も知らない数: {hidden_secret}")
-                        # 次ラウンドは負けた方（=プレイヤー1）が先行
-                        starter = 1
-                        input("次のラウンドへ（Enterで画面を隠す）")
-                        clear_screen()
-                        break
-
-                    input(f"▶ {p1_name} の番です。{p2_name} は見ないでね！（Enterで続行）")
-                    clear_screen()
-                    player_turn(1)
-                    if winner is not None:
-                        score1 += 1
-                        print(f"🎉 ラウンド勝者：{p1_name}！ {tries1}回で当てたよ！")
-                        print(f"★ 現在のスコア: {p1_name} {score1} - {score2} {p2_name}\n")
-                        print("このラウンドの行動履歴:")
-                        for entry in actions_log_all:
-                            print(" -", entry)
-                        # ラウンドの答え（公開）
-                        print("\n［このラウンドの答え］")
-                        print(f"  {p1_name} の数: {secret1}")
-                        print(f"  {p2_name} の数: {secret2}")
-                        print(f"  誰も知らない数: {hidden_secret}")
-                        # 次ラウンドは負けた方（=プレイヤー2）が先行
-                        starter = 2
-                        input("次のラウンドへ（Enterで画面を隠す）")
-                        clear_screen()
-                        break
-
-            round_no += 1
-
-        # マッチ終了
-        clear_screen()
-
-        if score1 > score2:
-            print(f"🏆 マッチ勝者：{p1_name}！ 最終スコア {p1_name} {score1} - {score2} {p2_name}")
+def handle_guess(player_id: int, guess: int):
+    """Processes a guess made by the current player. Checks for traps, updates
+    scores, logs, and determines if the round is won."""
+    opponent_id = 2 if player_id == 1 else 1
+    opponent_secret = session['secret2'] if player_id == 1 else session['secret1']
+    my_name = session['p1_name'] if player_id == 1 else session['p2_name']
+    opp_name = session['p2_name'] if player_id == 1 else session['p1_name']
+    # Increment tries counter
+    if player_id == 1:
+        session['tries1'] += 1
+    else:
+        session['tries2'] += 1
+    # Check for correct guess
+    if guess == opponent_secret:
+        session['actions_log'].append(f"{my_name} が g（予想）→ {guess}（正解！相手は即死）")
+        # Award point and record winner
+        if player_id == 1:
+            session['score1'] += 1
         else:
-            print(f"🏆 マッチ勝者：{p2_name}！ 最終スコア {p1_name} {score1} - {score2} {p2_name}")
+            session['score2'] += 1
+        session['winner'] = player_id
+        return redirect(url_for('full_game'))
+    # Check kill traps (±1 immediate defeat)
+    kill_traps = session['trap_kill'][opponent_id]
+    if any(abs(guess - t) <= 1 for t in kill_traps):
+        session['actions_log'].append(f"{my_name} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）")
+        # Opponent wins round
+        session['winner'] = opponent_id
+        return redirect(url_for('full_game'))
+    # Check info traps (exact match)
+    info_traps = session['trap_info'][opponent_id]
+    if guess in info_traps:
+        # Activate pending view for the opponent
+        session['pending_view'][opponent_id] = True
+        session['view_cut_index'][opponent_id] = len(session['actions_log'])
+        session['actions_log'].append(f"{my_name} が g（予想）→ {guess}（情報トラップ発動）")
+    # Check kill traps (±5 skip next turn)
+    if any(abs(guess - t) <= 5 for t in kill_traps):
+        session['skip_next_turn'][player_id] = True
+        session['actions_log'].append(f"{my_name} が g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
+        return switch_turn_and_redirect(player_id)
+    # Normal miss
+    session['actions_log'].append(f"{my_name} が g（予想）→ {guess}（ハズレ）")
+    return switch_turn_and_redirect(player_id)
+
+
+def handle_hint(player_id: int, form_data):
+    """Processes a hint request. If the player can choose the type of hint,
+    the form should include a 'hint_type' field with '和','差','積'.
+    Otherwise, a random hint from available stock is selected."""
+    my_name = session['p1_name'] if player_id == 1 else session['p2_name']
+    # Determine if player can choose
+    choose_type = False
+    if player_id == 1 and session['hint_choice_available'][1]:
+        if form_data.get('confirm_choice'):
+            choose_type = True
+    if player_id == 2 and session['hint_choice_available'][2]:
+        if form_data.get('confirm_choice'):
+            choose_type = True
+    # If choosing type, expect 'hint_type' param
+    if choose_type:
+        hint_type = form_data.get('hint_type')
+        session['hint_choice_available'][player_id] = False
+    else:
+        # Random from available stock
+        stock = session['available_hints'][player_id]
+        if not stock:
+            # No hints left
+            session['actions_log'].append("（このラウンドのヒントは出尽くしました）")
+            return switch_turn_and_redirect(player_id)
+        hint_type = random.choice(stock)
+        stock.remove(hint_type)
+    # Compute hint value
+    opponent_secret = session['secret2'] if player_id == 1 else session['secret1']
+    hidden_secret = session['hidden_secret']
+    if hint_type == '和':
+        val = opponent_secret + hidden_secret
+    elif hint_type == '差':
+        val = abs(opponent_secret - hidden_secret)
+    else:
+        val = opponent_secret * hidden_secret
+    session['actions_log'].append(f"{my_name} が h（ヒント取得）{hint_type}＝{val}")
+    return switch_turn_and_redirect(player_id)
+
+
+def handle_change(player_id: int, new_secret: int):
+    """Processes a change of the player's secret number. Resets opponent hint stock
+    and imposes a cooldown of 2 turns for the change-number action."""
+    eff_min = session['eff_num_min']
+    eff_max = session['eff_num_max']
+    my_name = session['p1_name'] if player_id == 1 else session['p2_name']
+    # Check if new secret conflicts with own traps
+    if player_id == 1:
+        my_traps = session['trap_kill'][1] | session['trap_info'][1]
+    else:
+        my_traps = session['trap_kill'][2] | session['trap_info'][2]
+    if new_secret in my_traps:
+        session['actions_log'].append("⚠ その数字は現在のトラップに含まれています。別の数字を選んでください。")
+        return switch_turn_and_redirect(player_id)
+    # Update secret
+    if player_id == 1:
+        session['secret1'] = new_secret
+        session['cooldown'][1] = 2
+        # Reset opponent's hint stock
+        session['available_hints'][2] = ['和','差','積']
+    else:
+        session['secret2'] = new_secret
+        session['cooldown'][2] = 2
+        session['available_hints'][1] = ['和','差','積']
+    session['actions_log'].append(f"{my_name} が c（自分の数を変更）→ {new_secret}")
+    return switch_turn_and_redirect(player_id)
+
+
+def handle_trap(player_id: int, form_data):
+    """Processes trap setting. A trap can be of type 'k' (kill) or 'i' (info).
+    Depending on the form input, set the appropriate trap number(s)."""
+    tkind = form_data.get('trap_kind')
+    my_name = session['p1_name'] if player_id == 1 else session['p2_name']
+    eff_min = session['eff_num_min']
+    eff_max = session['eff_num_max']
+    my_secret = session['secret1'] if player_id == 1 else session['secret2']
+    # Determine which trap set to use
+    my_kill = session['trap_kill'][player_id]
+    my_info = session['trap_info'][player_id]
+    def read_trap_value(key: str):
+        val = int(form_data[key])
+        if not (eff_min <= val <= eff_max):
+            raise ValueError
+        # Cannot set trap on own secret or its negative equivalent in negative mode
+        if val == my_secret or (session['allow_negative'] and abs(val) == abs(my_secret)):
+            raise ValueError
+        return val
+    try:
+        if tkind == 'k':
+            tval = read_trap_value('trap_kill_value')
+            # Only one kill trap; replace if exists
+            my_kill.clear()
+            my_kill.add(tval)
+            session['actions_log'].append(f"{my_name} が killトラップを {tval} に設定")
+        elif tkind == 'i':
+            # Add up to 5 info traps
+            current = len(my_info)
+            values = []
+            for idx in range(current, min(5, current + 3)):
+                key = f'trap_info_value_{idx}'
+                if key in form_data:
+                    tval = read_trap_value(key)
+                    values.append(tval)
+            for v in values:
+                my_info.add(v)
+            session['actions_log'].append(f"{my_name} が infoトラップを {', '.join(str(v) for v in values)} に設定")
+        else:
+            session['actions_log'].append("⚠ 無効なトラップ種別が選択されました。")
+    except ValueError:
+        session['actions_log'].append("⚠ 無効な数字が入力されました。")
+    return switch_turn_and_redirect(player_id)
+
+
+def switch_turn_and_redirect(current_player: int):
+    """Helper to switch the turn to the other player and redirect to the play page."""
+    # Decrease cooldown counters
+    for pid in (1, 2):
+        if session['cooldown'][pid] > 0:
+            session['cooldown'][pid] -= 1
+    # Handle pending view flags: promote pending view to active at start of player's turn
+    # This logic ensures that when a player triggers an info trap, the opponent
+    # gains view permissions starting on their next turn.
+    if current_player == 1:
+        if session['pending_view'][2]:
+            session['can_view'][2] = True
+            session['pending_view'][2] = False
+    else:
+        if session['pending_view'][1]:
+            session['can_view'][1] = True
+            session['pending_view'][1] = False
+    # Switch turn
+    session['turn'] = 2 if current_player == 1 else 1
+    return redirect(url_for('full_game'))
+
+# ===== Entry point =====
+if __name__ == '__main__':
+    # Note: For production use, configure host/port via environment or command line
+    app.run(host='0.0.0.0', port=5000, debug=True)
