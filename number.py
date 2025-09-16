@@ -520,3 +520,7 @@ def switch_turn_and_redirect(current_player: int):
 if __name__ == '__main__':
     # Note: For production use, configure host/port via environment or command line
     app.run(host='0.0.0.0', port=5000, debug=True)
+@app.route('/')
+def index():
+    # トップにアクセスされたら /full にリダイレクト
+    return redirect(url_for('full_game'))
