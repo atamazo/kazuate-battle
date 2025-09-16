@@ -130,7 +130,7 @@ def index():
     <div class="card">
       <div class="card-header">ルーム作成</div>
       <div class="card-body">
-        <form method="post" action="{{ url_for('create_room') }}">
+        <form method="post" action="/create_room">
           <div class="mb-3">
             <label class="form-label">負の数を許可</label>
             <select class="form-select" name="allow_negative">
@@ -152,7 +152,7 @@ def index():
     <div class="card">
       <div class="card-header">ルームに参加</div>
       <div class="card-body">
-        <form method="get" action="{{ url_for('room_lobby_redirect') }}">
+        <form method="get" action="/room">
           <div class="mb-3">
             <label class="form-label">ルームID（4桁）</label>
             <input class="form-control" name="room_id" inputmode="numeric" pattern="\\d{4}" placeholder="1234" required>
