@@ -4,6 +4,11 @@ import random, string, os
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "imigawakaranai")
+# 本番(https)でセッションが安定するようクッキー設定
+app.config.update(
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=True
+)
 
 # ====== 定数 ======
 NUM_MIN = 1
@@ -250,7 +255,8 @@ def join(room_id, player_id):
         # 相手が揃ったらラウンド開始準備
         if room['pname'][1] and room['pname'][2]:
             start_new_round(room)
-        return redirect(url_for('play', room_id=room_id))
+        # セッションが飛んでもURLで本人識別できるよう as=player_id を付与
+        return redirect(url_for('play', room_id=room_id) + f"?as={player_id}")
     return join_form(room_id, player_id)
 
 def join_form(room_id, player_id, error=None):
@@ -302,6 +308,11 @@ def start_new_round(room):
 @app.route('/play/<room_id>', methods=['GET','POST'])
 def play(room_id):
     room = room_or_404(room_id)
+    # クエリ ?as=1/2 が来たら、その場でセッションをバインド（別タブ/クッキー無効対策）
+    as_pid = request.args.get('as')
+    if as_pid in ('1','2'):
+        session['room_id'] = room_id
+        session['player_id'] = int(as_pid)
     # プレイヤー同定（URLだけで来たとき用）
     pid = session.get('player_id')
     rid = session.get('room_id')
