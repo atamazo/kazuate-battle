@@ -37,16 +37,29 @@ def bootstrap_page(title, body_html):
   <title>{{title}}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { background:#0f172a; color:#e5e7eb; }
-    a, .btn-link { color:#38bdf8; }
-    .card { background:#111827; border:1px solid #1f2937; }
-    .card-header { background:#0b1220; border-bottom:1px solid #1f2937; }
-    .btn-primary { background:#2563eb; border-color:#2563eb; }
-    .btn-outline-light { border-color:#374151; }
-    .badge { font-size: .9rem; }
-    .form-control, .form-select { background:#0b1220; color:#e5e7eb; border-color:#374151; }
-    .form-control:focus, .form-select:focus { border-color:#60a5fa; box-shadow:none; }
-    .log-box { max-height: 40vh; overflow:auto; background:#0b1220; padding:1rem; border:1px solid #1f2937; border-radius:.5rem; }
+    /* High-contrast dark theme */
+    body { background:#0b1220; color:#f1f5f9; }
+    a, .btn-link { color:#93c5fd; }
+    a:hover, .btn-link:hover { color:#bfdbfe; }
+
+    .card { background:#0f172a; border:1px solid #334155; }
+    .card-header { background:#0b1323; border-bottom:1px solid #334155; }
+
+    .btn-primary { background:#2563eb; border-color:#1d4ed8; }
+    .btn-primary:hover { background:#1d4ed8; border-color:#1e40af; }
+
+    .btn-outline-light { color:#f1f5f9; border-color:#94a3b8; }
+    .btn-outline-light:hover { color:#0b1220; background:#e2e8f0; border-color:#e2e8f0; }
+
+    .badge { font-size:.9rem; }
+
+    .form-control, .form-select { background:#0b1323; color:#f1f5f9; border-color:#475569; }
+    .form-control::placeholder { color:#cbd5e1; opacity:1; }
+    .form-control:focus, .form-select:focus { border-color:#93c5fd; box-shadow:none; }
+
+    .text-muted, .small.text-muted { color:#e2e8f0 !important; }
+
+    .log-box { max-height:40vh; overflow:auto; background:#0b1323; color:#e2e8f0; padding:1rem; border:1px solid #334155; border-radius:.5rem; }
   </style>
 </head>
 <body>
