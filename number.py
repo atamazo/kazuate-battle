@@ -20,6 +20,31 @@ HIDDEN_MAX = 30
 rooms = {}  # room_id -> dict(state)
 
 # ====== ユーティリティ ======
+
+def get_int(form, key, default=None, min_v=None, max_v=None):
+    """form[key] を安全に int に。失敗時は default を返す。範囲もチェック。"""
+    v = form.get(key)
+    if v is None or v == '':
+        return default
+    try:
+        x = int(v)
+    except Exception:
+        return default
+    if min_v is not None and x < min_v:
+        return default
+    if max_v is not None and x > max_v:
+        return default
+    return x
+
+def push_and_back(room, pid, msg, to_play=True):
+    """ログを残してプレイ画面へ戻る（またはロビーへ）。"""
+    if msg:
+        push_log(room, msg)
+    rid = get_current_room_id()
+    if to_play:
+        return redirect(url_for('play', room_id=rid))
+    else:
+        return redirect(url_for('room_lobby', room_id=rid))
 def gen_room_id():
     while True:
         rid = ''.join(random.choices(string.digits, k=4))
@@ -32,7 +57,7 @@ def eff_ranges(allow_negative: bool):
     return NUM_MIN, NUM_MAX, HIDDEN_MIN, HIDDEN_MAX
 
 def bootstrap_page(title, body_html):
-    # Bootstrap + ちょいデザイン（高コントラスト）
+    # Bootstrap + ちょいデザイン
     return render_template_string("""
 <!doctype html>
 <html lang="ja">
@@ -59,10 +84,9 @@ def bootstrap_page(title, body_html):
     .badge { font-size:.9rem; }
 
     .form-control, .form-select { background:#0b1323; color:#f1f5f9; border-color:#475569; }
-    .form-control::placeholder { color:#f472b6; opacity:1; } /* 見やすい明色 */
+    .form-control::placeholder { color:#cbd5e1; opacity:1; }
     .form-control:focus, .form-select:focus { border-color:#93c5fd; box-shadow:none; }
 
-    /* グレー文字を明るいピンク系に寄せる */
     .text-muted, .small.text-muted, .form-label { color:#f472b6 !important; }
 
     .log-box { max-height:40vh; overflow:auto; background:#0b1323; color:#e2e8f0; padding:1rem; border:1px solid #334155; border-radius:.5rem; }
@@ -91,7 +115,7 @@ def init_room(allow_negative: bool, target_points: int):
         'target_points': target_points,
         'round_no': 1,
         'score': {1:0, 2:0},
-        'turn': 1,  # このラウンドの開始番
+        'turn': 1,  # このラウンドの開始番（途中で勝敗ついたら、次は負け側が先手）
         'pname': {1: None, 2: None},
         'secret': {1: None, 2: None},
         'hidden': None,
@@ -109,8 +133,6 @@ def init_room(allow_negative: bool, target_points: int):
         'winner': None,   # ラウンド勝者(1 or 2)
         'phase': 'lobby', # lobby -> secrets -> play -> end_round
         'starter': 1,     # 次ラウンドの先手（負け側に自動切替）
-        # 追加：このターンで info を既に1回設定したかどうか
-        'info_set_this_turn': {1: False, 2: False},
     }
 
 def room_or_404(rid):
@@ -140,8 +162,6 @@ def switch_turn(room, cur_pid):
         room['pending_view'][opp] = False
     # ターン交代
     room['turn'] = opp
-    # 交代後のプレイヤーの「このターンのinfo設定済み」フラグをリセット
-    room['info_set_this_turn'][opp] = False
 
 # ====== ルーティング ======
 
@@ -300,7 +320,6 @@ def start_new_round(room):
     room['skip_next_turn'] = {1: False, 2: False}
     room['cooldown'] = {1: 0, 2: 0}
     room['available_hints'] = {1: ['和','差','積'], 2: ['和','差','積']}
-    room['info_set_this_turn'] = {1: False, 2: False}
     # 先手/後手のヒント指定可フラグ
     if room['starter'] == 1:
         room['hint_choice_available'] = {1: False, 2: True}
@@ -314,18 +333,19 @@ def start_new_round(room):
 @app.route('/play/<room_id>', methods=['GET','POST'])
 def play(room_id):
     room = room_or_404(room_id)
-    # クエリ ?as=1/2 をセッションに反映
+    # クエリ ?as=1/2 が来たら、その場でセッションをバインド（別タブ/クッキー無効対策）
     as_pid = request.args.get('as')
     if as_pid in ('1','2'):
         session['room_id'] = room_id
         session['player_id'] = int(as_pid)
-
+    # プレイヤー同定（URLだけで来たとき用）
     pid = session.get('player_id')
     rid = session.get('room_id')
     if rid != room_id or pid not in (1,2):
+        # 未紐付けならロビーへ誘導
         return redirect(url_for('room_lobby', room_id=room_id))
 
-    # 2人揃っていない場合は待機画面
+    # まだ2人揃ってない場合はロビーに戻さず待機画面を表示
     if not (room['pname'][1] and room['pname'][2]):
         l1 = url_for('join', room_id=room_id, player_id=1, _external=True)
         l2 = url_for('join', room_id=room_id, player_id=2, _external=True)
@@ -375,21 +395,42 @@ def play(room_id):
     if request.method == 'POST':
         if room['turn'] != pid:
             return redirect(url_for('play', room_id=room_id))  # 自分の番でなければ無視
-        action = request.form.get('action')
-        if action == 'g':
-            guess_val = int(request.form.get('guess'))
-            return handle_guess(room, pid, guess_val)
-        elif action == 'h':
-            return handle_hint(room, pid, request.form)
-        elif action == 'c':
-            new_secret = int(request.form.get('new_secret'))
-            return handle_change(room, pid, new_secret)
-        elif action == 't_kill':
-            # killは従来通りターン消費あり
-            return handle_trap_kill(room, pid, request.form)
-        elif action == 't_info':
-            # infoは 1ターンに1回だけ / ターン消費なし
-            return handle_trap_info(room, pid, request.form)
+        try:
+            action = request.form.get('action')
+            if action == 'g':
+                guess_val = get_int(request.form, 'guess',
+                                    default=None,
+                                    min_v=room['eff_num_min'], max_v=room['eff_num_max'])
+                if guess_val is None:
+                    return push_and_back(room, pid, "⚠ 予想値が不正です。")
+                return handle_guess(room, pid, guess_val)
+
+            elif action == 'h':
+                return handle_hint(room, pid, request.form)
+
+            elif action == 'c':
+                new_secret = get_int(request.form, 'new_secret',
+                                     default=None,
+                                     min_v=room['eff_num_min'], max_v=room['eff_num_max'])
+                if new_secret is None:
+                    return push_and_back(room, pid, "⚠ 変更する数が不正です。")
+                return handle_change(room, pid, new_secret)
+
+            elif action == 't':
+                return handle_trap(room, pid, request.form)
+
+            elif action == 't_kill':
+                return handle_trap_kill(room, pid, request.form)
+
+            elif action == 't_info':
+                return handle_trap_info(room, pid, request.form)
+
+            else:
+                return push_and_back(room, pid, "⚠ 不明なアクションです。")
+
+        except Exception:
+            app.logger.exception("POST処理中の例外")
+            return redirect(url_for('index'))
 
     # 表示用データ
     p1, p2 = room['pname'][1], room['pname'][2]
@@ -399,7 +440,6 @@ def play(room_id):
 
     c_available = (room['cooldown'][pid] == 0)
     hint_available = bool(room['available_hints'][pid]) or room['hint_choice_available'][pid]
-    info_can_set = not room['info_set_this_turn'][pid]
 
     # 相手のフル行動は info トラップで閲覧権が付与された場合のみ、かつ発動時点以降を表示
     filtered = []
@@ -415,7 +455,7 @@ def play(room_id):
         filtered.append(entry)
         continue
       # それ以外の相手の行動は隠す
-
+      
     log_html = "".join(f"<li>{e}</li>" for e in filtered)
 
     # 自分の番フォーム
@@ -426,7 +466,6 @@ def play(room_id):
   <div class="card-header">アクション</div>
   <div class="card-body">
     <div class="row g-2">
-
       <div class="col-12 col-md-6">
         <form method="post" class="p-2 border rounded">
           <input type="hidden" name="action" value="g">
@@ -435,7 +474,6 @@ def play(room_id):
           <button class="btn btn-primary w-100">予想する</button>
         </form>
       </div>
-
       <div class="col-12 col-md-6">
         <form method="post" class="p-2 border rounded">
           <input type="hidden" name="action" value="h">
@@ -452,39 +490,29 @@ def play(room_id):
         <form method="post" class="p-2 border rounded">
           <input type="hidden" name="action" value="c">
           <label class="form-label">自分の数を変更</label>
-          <input class="form-control mb-2" name="new_secret" type="number" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
+          <input class="form-control mb-2" name="new_secret" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
           <button class="btn btn-outline-light w-100" {"disabled" if not c_available else ""}>変更する（CT2）</button>
         </form>
       </div>
 
-      <!-- kill（ターン消費あり） -->
       <div class="col-12 col-md-6">
         <form method="post" class="p-2 border rounded">
-          <input type="hidden" name="action" value="t_kill">
-          <label class="form-label">トラップA: kill</label>
-          <input class="form-control mb-2" name="trap_kill_value" type="number" placeholder="killは1つだけ（上書き）">
-          <div class="small text-muted">±1 即死 / ±5 次ターンスキップ（※設定するとターン終了）</div>
-          <button class="btn btn-outline-light w-100">killを設定</button>
-        </form>
-      </div>
-
-      <!-- info（ターン消費なし・1ターン1回） -->
-      <div class="col-12">
-        <form method="post" class="p-2 border rounded">
-          <input type="hidden" name="action" value="t_info">
-          <label class="form-label">トラップB: info（このターン1個まで／ターン消費なし）</label>
-          <div class="row g-2 align-items-end">
-            <div class="col-12 col-md-6">
-              <input class="form-control mb-2" name="trap_info_value" type="number" placeholder="info 値（1つだけ）">
-            </div>
-            <div class="col-12 col-md-6">
-              <button class="btn btn-outline-light w-100" {"disabled" if not info_can_set else ""}>infoを追加（同ターン継続）</button>
-            </div>
+          <input type="hidden" name="action" value="t">
+          <label class="form-label">トラップ</label>
+          <select class="form-select mb-2" name="trap_kind">
+            <option value="k">kill（±1即死 / ±5次ターンスキップ）</option>
+            <option value="i">info（相手が踏むとあなたが次ターン以降で相手行動のフル履歴を閲覧）</option>
+          </select>
+          <div class="mb-2">
+            <input class="form-control mb-2" name="trap_kill_value" type="number" placeholder="killは1つだけ（上書き）">
+            <div class="small text-muted">infoは最大5個。必要に応じて3つまで一度に追加可：</div>
+            <input class="form-control mb-2" name="trap_info_value_0" type="number" placeholder="info(1)">
+            <input class="form-control mb-2" name="trap_info_value_1" type="number" placeholder="info(2)">
+            <input class="form-control mb-2" name="trap_info_value_2" type="number" placeholder="info(3)">
           </div>
-          <div class="small text-muted">相手がこの数字を予想で踏むと、その瞬間以降の相手の行動履歴を閲覧可能になります。</div>
+          <button class="btn btn-outline-light w-100">設定する</button>
         </form>
       </div>
-
     </div>
   </div>
 </div>
@@ -591,7 +619,8 @@ def next_round(room_id):
     loser = 2 if room['winner'] == 1 else 1
     room['starter'] = loser
     room['round_no'] += 1
-    # 秘密の数を再入力できるよう、joinへ誘導
+    # 秘密の数を「再入力」できるよう、joinリンクへ誘導（安全）
+    # （前ラウンドの値をそのままにしたい場合は、UI側で流用導線を作ることも可能）
     room['secret'][1] = None
     room['secret'][2] = None
     room['phase'] = 'lobby'
@@ -602,6 +631,7 @@ def finish_match(room_id):
     room = room_or_404(room_id)
     p1, p2 = room['pname'][1], room['pname'][2]
     msg = f"🏆 マッチ終了！ {p1} {room['score'][1]} - {room['score'][2]} {p2}"
+    # ルームを消す（残したいなら残してもOK）
     del rooms[room_id]
     return bootstrap_page("マッチ終了", f"<div class='alert alert-info'>{msg}</div><a class='btn btn-primary' href='{url_for('index')}'>ホームへ</a>")
 
@@ -703,9 +733,9 @@ def handle_change(room, pid, new_secret):
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
-def handle_trap_kill(room, pid, form):
-    """killは従来通り。設定するとターン消費あり。"""
+def handle_trap(room, pid, form):
     myname = room['pname'][pid]
+    kind = form.get('trap_kind')
     eff_min, eff_max = room['eff_num_min'], room['eff_num_max']
     my_secret = room['secret'][pid]
 
@@ -721,55 +751,32 @@ def handle_trap_kill(room, pid, form):
             return False
         return True
 
-    v = form.get('trap_kill_value')
-    if valid_trap_val(v):
-        x = int(v)
-        room['trap_kill'][pid].clear()
-        room['trap_kill'][pid].append(x)
-        push_log(room, f"{myname} が killトラップを {x} に設定")
-    else:
-        push_log(room, "⚠ 無効なkillトラップ値です。")
-
-    # killはターンを消費
-    switch_turn(room, pid)
-    return redirect(url_for('play', room_id=get_current_room_id()))
-
-def handle_trap_info(room, pid, form):
-    """infoは 1ターンに1回だけ設定可能・ターン消費なし。"""
-    myname = room['pname'][pid]
-    if room['info_set_this_turn'][pid]:
-        push_log(room, "⚠ このターンは既にinfoトラップを1個設定済みです。")
-        # ターンはそのまま（消費なし）
-        return redirect(url_for('play', room_id=get_current_room_id()))
-
-    eff_min, eff_max = room['eff_num_min'], room['eff_num_max']
-    my_secret = room['secret'][pid]
-
-    def valid_trap_val(v):
-        if v is None: return False
-        try:
+    if kind == 'k':
+        v = form.get('trap_kill_value')
+        if valid_trap_val(v):
             x = int(v)
-        except:
-            return False
-        if not (eff_min <= x <= eff_max):
-            return False
-        if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
-            return False
-        return True
-
-    v = form.get('trap_info_value')
-    if valid_trap_val(v) and len(room['trap_info'][pid]) < 5:
-        x = int(v)
-        if x not in room['trap_info'][pid]:
-            room['trap_info'][pid].append(x)
-            push_log(room, f"{myname} が infoトラップを {x} に設定（ターン継続）")
-            room['info_set_this_turn'][pid] = True
+            room['trap_kill'][pid].clear()
+            room['trap_kill'][pid].append(x)
+            push_log(room, f"{myname} が killトラップを {x} に設定")
         else:
-            push_log(room, "⚠ そのinfoトラップは既に設定されています。")
+            push_log(room, "⚠ 無効なkillトラップ値です。")
+    elif kind == 'i':
+        added = []
+        for key in ('trap_info_value_0','trap_info_value_1','trap_info_value_2'):
+            v = form.get(key)
+            if valid_trap_val(v) and len(room['trap_info'][pid]) < 5:
+                x = int(v)
+                if x not in room['trap_info'][pid]:
+                    room['trap_info'][pid].append(x)
+                    added.append(x)
+        if added:
+            push_log(room, f"{myname} が infoトラップを {', '.join(map(str, added))} に設定")
+        else:
+            push_log(room, "⚠ infoトラップの追加はありません。")
     else:
-        push_log(room, "⚠ 無効なinfoトラップ値、または上限に達しています。")
+        push_log(room, "⚠ 無効なトラップ種別です。")
 
-    # ターンは消費しない（switch_turnしない）
+    switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 def get_current_room_id():
