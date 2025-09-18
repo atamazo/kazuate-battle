@@ -15,6 +15,7 @@ NUM_MIN = 1
 NUM_MAX = 50
 HIDDEN_MIN = 1
 HIDDEN_MAX = 30
+INFO_MAX = 7  # infoトラップの同時最大数
 
 # ルームの全状態を保持（簡易インメモリ）
 rooms = {}  # room_id -> dict(state)
@@ -45,6 +46,7 @@ def push_and_back(room, pid, msg, to_play=True):
         return redirect(url_for('play', room_id=rid))
     else:
         return redirect(url_for('room_lobby', room_id=rid))
+
 def gen_room_id():
     while True:
         rid = ''.join(random.choices(string.digits, k=4))
@@ -57,7 +59,7 @@ def eff_ranges(allow_negative: bool):
     return NUM_MIN, NUM_MAX, HIDDEN_MIN, HIDDEN_MAX
 
 def bootstrap_page(title, body_html):
-    # Bootstrap + ちょいデザイン
+    # Bootstrap + ちょいデザイン（コントラスト高め＆灰色→明るめ）
     return render_template_string("""
 <!doctype html>
 <html lang="ja">
@@ -67,7 +69,6 @@ def bootstrap_page(title, body_html):
   <title>{{title}}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    /* High-contrast dark theme */
     body { background:#0b1220; color:#f1f5f9; }
     a, .btn-link { color:#93c5fd; }
     a:hover, .btn-link:hover { color:#bfdbfe; }
@@ -84,10 +85,12 @@ def bootstrap_page(title, body_html):
     .badge { font-size:.9rem; }
 
     .form-control, .form-select { background:#0b1323; color:#f1f5f9; border-color:#475569; }
-    .form-control::placeholder { color:#cbd5e1; opacity:1; }
+    .form-control::placeholder { color:#e9c5d9; opacity:1; }
     .form-control:focus, .form-select:focus { border-color:#93c5fd; box-shadow:none; }
 
-    .text-muted, .small.text-muted, .form-label { color:#f472b6 !important; }
+    /* 明るめに統一（グレー排除） */
+    .text-muted, .small.text-muted, .form-label { color:#f9a8d4 !important; }
+    .small.text-warning, .text-warning { color:#f9a8d4 !important; }
 
     .log-box { max-height:40vh; overflow:auto; background:#0b1323; color:#e2e8f0; padding:1rem; border:1px solid #334155; border-radius:.5rem; }
   </style>
@@ -129,10 +132,20 @@ def init_room(allow_negative: bool, target_points: int):
         'can_view': {1: False, 2: False},
         'view_cut_index': {1: None, 2: None},
         'skip_next_turn': {1: False, 2: False},
+        'info_set_this_turn': {1: False, 2: False},  # ★当ターンにinfoを1個置いたか
         'actions': [],
         'winner': None,   # ラウンド勝者(1 or 2)
-        'phase': 'lobby', # lobby -> secrets -> play -> end_round
+        'phase': 'lobby', # lobby -> play -> end_round
         'starter': 1,     # 次ラウンドの先手（負け側に自動切替）
+
+        # === 新要素（ブラフヒント & ゲスフラグ／各種CT） ===
+        'bluff': {1: None, 2: None},                 # 次回 相手がヒント要求時に表示する偽ヒント
+        'hint_penalty_active': {1: False, 2: False}, # 以降 ヒント後にCT1
+        'hint_ct': {1: 0, 2: 0},                     # 現在ヒントCT残り
+        'guess_flag_armed': {1: False, 2: False},    # 次の相手ターンの予想を監視
+        'guess_flag_ct': {1: 0, 2: 0},               # ゲスフラグ再使用CT
+        'guess_penalty_active': {1: False, 2: False},# 以降 予想後にCT1
+        'guess_ct': {1: 0, 2: 0},                    # 現在予想CT残り
     }
 
 def room_or_404(rid):
@@ -151,17 +164,33 @@ def push_log(room, s):
     room['actions'].append(s)
 
 def switch_turn(room, cur_pid):
-    # CTを減らす
+    # CTを減らす（c, ヒント, 予想, ゲスフラグ）
     for p in (1,2):
         if room['cooldown'][p] > 0:
             room['cooldown'][p] -= 1
+        if room['hint_ct'][p] > 0:
+            room['hint_ct'][p] -= 1
+        if room['guess_ct'][p] > 0:
+            room['guess_ct'][p] -= 1
+        if room['guess_flag_ct'][p] > 0:
+            room['guess_flag_ct'][p] -= 1
+
     # infoトラップの閲覧権を次ターン開始時に反映
     opp = 2 if cur_pid == 1 else 1
     if room['pending_view'][opp]:
         room['can_view'][opp] = True
         room['pending_view'][opp] = False
+
     # ターン交代
     room['turn'] = opp
+    # infoは1ターン1個の制限。相手の新しいターン開始時に解除
+    room['info_set_this_turn'][opp] = False
+
+    # ゲスフラグは「相手の次のターン」限定なので、そのターンが終わったら解除
+    if cur_pid == 1 and room['guess_flag_armed'][2]:
+        room['guess_flag_armed'][2] = False
+    if cur_pid == 2 and room['guess_flag_armed'][1]:
+        room['guess_flag_armed'][1] = False
 
 # ====== ルーティング ======
 
@@ -242,14 +271,14 @@ def room_lobby(room_id):
     <div class="row g-2">
       <div class="col-12 col-md-6">
         <div class="p-2 rounded border border-secondary">
-          <div class="small text-muted mb-1">プレイヤー1用リンク</div>
+          <div class="small text-warning mb-1">プレイヤー1用リンク</div>
           <a href="{l1}">{l1}</a>
           <div class="mt-1"><span class="badge bg-secondary">状態</span> {p1}</div>
         </div>
       </div>
       <div class="col-12 col-md-6">
         <div class="p-2 rounded border border-secondary">
-          <div class="small text-muted mb-1">プレイヤー2用リンク</div>
+          <div class="small text-warning mb-1">プレイヤー2用リンク</div>
           <a href="{l2}">{l2}</a>
           <div class="mt-1"><span class="badge bg-secondary">状態</span> {p2}</div>
         </div>
@@ -318,8 +347,16 @@ def start_new_round(room):
     room['can_view'] = {1: False, 2: False}
     room['view_cut_index'] = {1: None, 2: None}
     room['skip_next_turn'] = {1: False, 2: False}
+    room['info_set_this_turn'] = {1: False, 2: False}  # ★ラウンド開始でリセット
     room['cooldown'] = {1: 0, 2: 0}
     room['available_hints'] = {1: ['和','差','積'], 2: ['和','差','積']}
+    room['bluff'] = {1: None, 2: None}
+    room['hint_penalty_active'] = {1: False, 2: False}
+    room['hint_ct'] = {1: 0, 2: 0}
+    room['guess_flag_armed'] = {1: False, 2: False}
+    room['guess_flag_ct'] = {1: 0, 2: 0}
+    room['guess_penalty_active'] = {1: False, 2: False}
+    room['guess_ct'] = {1: 0, 2: 0}
     # 先手/後手のヒント指定可フラグ
     if room['starter'] == 1:
         room['hint_choice_available'] = {1: False, 2: True}
@@ -359,14 +396,14 @@ def play(room_id):
     <div class="row g-2">
       <div class="col-12 col-md-6">
         <div class="p-2 rounded border border-secondary">
-          <div class="small text-muted mb-1">プレイヤー1用リンク</div>
+          <div class="small text-warning mb-1">プレイヤー1用リンク</div>
           <a href="{l1}">{l1}</a>
           <div class="mt-1"><span class="badge bg-secondary">状態</span> {p1}</div>
         </div>
       </div>
       <div class="col-12 col-md-6">
         <div class="p-2 rounded border border-secondary">
-          <div class="small text-muted mb-1">プレイヤー2用リンク</div>
+          <div class="small text-warning mb-1">プレイヤー2用リンク</div>
           <a href="{l2}">{l2}</a>
           <div class="mt-1"><span class="badge bg-secondary">状態</span> {p2}</div>
         </div>
@@ -425,6 +462,12 @@ def play(room_id):
             elif action == 't_info':
                 return handle_trap_info(room, pid, request.form)
 
+            elif action == 'bh':
+                return handle_bluff(room, pid, request.form)
+
+            elif action == 'gf':
+                return handle_guessflag(room, pid)
+
             else:
                 return push_and_back(room, pid, "⚠ 不明なアクションです。")
 
@@ -439,7 +482,7 @@ def play(room_id):
     oppname = room['pname'][opp]
 
     c_available = (room['cooldown'][pid] == 0)
-    hint_available = bool(room['available_hints'][pid]) or room['hint_choice_available'][pid]
+    hint_available = True  # 表示上は在庫非表示にする（内部在庫は維持）
 
     # 相手のフル行動は info トラップで閲覧権が付与された場合のみ、かつ発動時点以降を表示
     filtered = []
@@ -455,7 +498,7 @@ def play(room_id):
         filtered.append(entry)
         continue
       # それ以外の相手の行動は隠す
-      
+
     log_html = "".join(f"<li>{e}</li>" for e in filtered)
 
     # 自分の番フォーム
@@ -471,18 +514,20 @@ def play(room_id):
           <input type="hidden" name="action" value="g">
           <label class="form-label">相手の数字を予想</label>
           <input class="form-control mb-2" name="guess" type="number" required placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
-          <button class="btn btn-primary w-100">予想する</button>
+          <button class="btn btn-primary w-100" {"disabled" if room['guess_ct'][pid] > 0 else ""}>予想する</button>
+          <div class="small text-warning mt-1">{ "（予想はクールタイム中）" if room['guess_ct'][pid] > 0 else "" }</div>
         </form>
       </div>
+
       <div class="col-12 col-md-6">
         <form method="post" class="p-2 border rounded">
           <input type="hidden" name="action" value="h">
           <div class="mb-2">
             <label class="form-label">ヒント</label>
-            <div class="small text-muted mb-2">在庫: {", ".join(room['available_hints'][pid]) if room['available_hints'][pid] else "なし"}</div>
-            {"<div class='mb-2'><label class='form-label'>種類を指定</label><select class='form-select' name='hint_type'><option>和</option><option>差</option><option>積</option></select><input type='hidden' name='confirm_choice' value='1'></div>" if room['hint_choice_available'][pid] else "<div class='text-muted small mb-2'>(このラウンドは種類指定不可。ランダム消費)</div>"}
+            { "<div class='mb-2'><label class='form-label'>種類を指定</label><select class='form-select' name='hint_type'><option>和</option><option>差</option><option>積</option></select><input type='hidden' name='confirm_choice' value='1'></div>" if room['hint_choice_available'][pid] else "<div class='small text-warning mb-2'>(このラウンドは種類指定不可。ランダム)</div>" }
           </div>
-          <button class="btn btn-outline-light w-100" {"disabled" if not hint_available else ""}>ヒントをもらう</button>
+          <button class="btn btn-outline-light w-100" {"disabled" if room['hint_ct'][pid] > 0 or not hint_available else ""}>ヒントをもらう</button>
+          <div class="small text-warning mt-1">{ "（ヒントはクールタイム中）" if room['hint_ct'][pid] > 0 else "" }</div>
         </form>
       </div>
 
@@ -505,14 +550,45 @@ def play(room_id):
           </select>
           <div class="mb-2">
             <input class="form-control mb-2" name="trap_kill_value" type="number" placeholder="killは1つだけ（上書き）">
-            <div class="small text-muted">infoは最大5個。必要に応じて3つまで一度に追加可：</div>
-            <input class="form-control mb-2" name="trap_info_value_0" type="number" placeholder="info(1)">
+            <div class="small text-warning">infoは最大7個。入力欄は3つあります。<br>デフォルトは<strong>無料で1個（ターン消費なし）</strong>。下のチェックを入れると<strong>最大3個を一度に設置（ターン消費）</strong>します。</div>
+            <input class="form-control mb-2" name="trap_info_value" type="number" placeholder="info(1)">
             <input class="form-control mb-2" name="trap_info_value_1" type="number" placeholder="info(2)">
             <input class="form-control mb-2" name="trap_info_value_2" type="number" placeholder="info(3)">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="info_bulk" value="1" id="info_bulk">
+              <label class="form-check-label" for="info_bulk">infoを3つまとめて置く（ターン消費）</label>
+            </div>
           </div>
           <button class="btn btn-outline-light w-100">設定する</button>
         </form>
       </div>
+
+      <div class="col-12 col-md-6">
+        <form method="post" class="p-2 border rounded">
+          <input type="hidden" name="action" value="bh">
+          <label class="form-label">ブラフヒントを仕掛ける</label>
+          <div class="mb-2">
+            <select class="form-select mb-2" name="bluff_type">
+              <option value="和">和（相手には種類は表示されません）</option>
+              <option value="差">差</option>
+              <option value="積">積</option>
+            </select>
+            <input class="form-control" type="number" name="bluff_value" placeholder="相手に見せる数値（必須）" required>
+          </div>
+          <button class="btn btn-outline-light w-100">ブラフを設定（ターン消費）</button>
+        </form>
+      </div>
+
+      <div class="col-12 col-md-6">
+        <form method="post" class="p-2 border rounded">
+          <input type="hidden" name="action" value="gf">
+          <label class="form-label">ゲスフラグを立てる</label>
+          <div class="small text-warning mb-2">次の相手ターンに予想してきたら、その後 相手の予想は常にCT1</div>
+          <button class="btn btn-outline-light w-100" {"disabled" if room['guess_flag_ct'][pid] > 0 else ""}>立てる（CT2）</button>
+          <div class="small text-warning mt-1">{ "（ゲスフラグはクールタイム中）" if room['guess_flag_ct'][pid] > 0 else "" }</div>
+        </form>
+      </div>
+
     </div>
   </div>
 </div>
@@ -533,7 +609,7 @@ def play(room_id):
               <span class="mx-2">-</span>
               <span class="badge bg-light text-dark">{room['score'][2]}</span> {room['pname'][2]}
             </div>
-            <div class="text-muted small">先取 {room['target_points']}</div>
+            <div class="small text-warning">先取 {room['target_points']}</div>
           </div>
           <div><span class="badge bg-primary">{room['pname'][room['turn']]} のターン</span></div>
         </div>
@@ -556,11 +632,10 @@ def play(room_id):
       <div class="card-body">
         <div class="mb-1"><span class="badge bg-secondary">名前</span> {myname}</div>
         <div class="mb-1"><span class="badge bg-secondary">自分の秘密の数</span> {room['secret'][pid]}</div>
-        <div class="mb-1"><span class="badge bg-secondary">CT</span> {room['cooldown'][pid]}</div>
-        <div class="mb-1"><span class="badge bg-secondary">ヒント在庫</span> {", ".join(room['available_hints'][pid]) if room['available_hints'][pid] else "なし"}</div>
+        <div class="mb-1"><span class="badge bg-secondary">CT</span> c:{room['cooldown'][pid]} / h:{room['hint_ct'][pid]} / g:{room['guess_ct'][pid]}</div>
         <div class="mb-1"><span class="badge bg-secondary">トラップ</span><br>
-          <span class="small text-muted">A(kill): {", ".join(map(str, room['trap_kill'][pid])) if room['trap_kill'][pid] else "なし"}</span><br>
-          <span class="small text-muted">B(info): {", ".join(map(str, room['trap_info'][pid])) if room['trap_info'][pid] else "なし"}</span>
+          <span class="small text-warning">A(kill): {", ".join(map(str, room['trap_kill'][pid])) if room['trap_kill'][pid] else "なし"}</span><br>
+          <span class="small text-warning">B(info): {", ".join(map(str, room['trap_info'][pid])) if room['trap_info'][pid] else "なし"}</span>
         </div>
       </div>
     </div>
@@ -571,7 +646,7 @@ def play(room_id):
         <div class="mb-1"><span class="badge bg-secondary">名前</span> {oppname}</div>
         <div class="mb-1"><span class="badge bg-secondary">あなたに対する予想回数</span> {room['tries'][opp]}</div>
         <div class="mb-1"><span class="badge bg-secondary">ログ閲覧権（info）</span> {"有効" if room['can_view'][pid] else "なし"}</div>
-        <div class="small text-muted">レンジ: {room['eff_num_min']}〜{room['eff_num_max']}</div>
+        <div class="small text-warning">レンジ: {room['eff_num_min']}〜{room['eff_num_max']}</div>
       </div>
     </div>
   </div>
@@ -619,8 +694,7 @@ def next_round(room_id):
     loser = 2 if room['winner'] == 1 else 1
     room['starter'] = loser
     room['round_no'] += 1
-    # 秘密の数を「再入力」できるよう、joinリンクへ誘導（安全）
-    # （前ラウンドの値をそのままにしたい場合は、UI側で流用導線を作ることも可能）
+    # 次ラウンドは秘密の数を再入力（安全）
     room['secret'][1] = None
     room['secret'][2] = None
     room['phase'] = 'lobby'
@@ -637,76 +711,171 @@ def finish_match(room_id):
 
 # ====== アクション処理 ======
 
+def _hint_once(room, pid, chose_by_user=False, silent=False):
+    """ヒントを1回実行しログを残す（在庫からランダム消費）。"""
+    opp = 2 if pid == 1 else 1
+    opp_secret = room['secret'][opp]
+    hidden = room['hidden']
+    stock = room['available_hints'][pid]
+    if stock:
+        htype = random.choice(stock)
+        stock.remove(htype)
+    else:
+        htype = random.choice(['和','差','積'])
+    if htype == '和':
+        val = opp_secret + hidden
+    elif htype == '差':
+        val = abs(opp_secret - hidden)
+    else:
+        val = opp_secret * hidden
+    if not silent:
+        myname = room['pname'][pid]
+        push_log(room, f"{myname} が h（ヒントを取得）＝{val}")
+    return
+
 def handle_guess(room, pid, guess):
     opp = 2 if pid == 1 else 1
     myname = room['pname'][pid]
     opponent_secret = room['secret'][opp]
+
+    # 予想のクールタイム中は不可
+    if room['guess_ct'][pid] > 0:
+        push_log(room, "（予想はクールタイム中）")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
     # 回数
     room['tries'][pid] += 1
+
+    # 相手がゲスフラグを直前に立てていた→この予想で発動
+    if room['guess_flag_armed'][opp]:
+        room['guess_penalty_active'][pid] = True
+        room['guess_flag_armed'][opp] = False
+        push_log(room, f"（{room['pname'][opp]} のゲスフラグが発動！以降、{room['pname'][pid]} の予想は常にCT1）")
+
     # まず「正解」優先
     if guess == opponent_secret:
         push_log(room, f"{myname} が g（予想）→ {guess}（正解！相手は即死）")
         room['score'][pid] += 1
         room['winner'] = pid
         return redirect(url_for('end_round', room_id=get_current_room_id()))
+
     # トラップ判定
     kill = set(room['trap_kill'][opp])
     info = set(room['trap_info'][opp])
+
     # ±1 即死（相手勝利）
     if any(abs(guess - k) <= 1 for k in kill):
         push_log(room, f"{myname} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）")
         room['winner'] = opp
         return redirect(url_for('end_round', room_id=get_current_room_id()))
+
     # info（一致で発動）
     if guess in info:
         room['pending_view'][opp] = True
         room['view_cut_index'][opp] = len(room['actions'])
         push_log(room, f"{myname} が g（予想）→ {guess}（情報トラップ発動）")
+
     # ±5 次ターンスキップ
     if any(abs(guess - k) <= 5 for k in kill):
         room['skip_next_turn'][pid] = True
         push_log(room, f"{myname} が g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
+        if room['guess_penalty_active'][pid]:
+            room['guess_ct'][pid] = 1
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
+
     # 通常ハズレ
     push_log(room, f"{myname} が g（予想）→ {guess}（ハズレ）")
+    if room['guess_penalty_active'][pid]:
+        room['guess_ct'][pid] = 1
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_hint(room, pid, form):
     myname = room['pname'][pid]
+    opp = 2 if pid == 1 else 1
+
+    # ブラフが相手から仕掛けられている場合：まず確認画面へ
+    if room['bluff'][opp]:
+        fake = room['bluff'][opp]
+        decision = form.get('bluff_decision')
+        if not decision:
+            # 種類名は伏せ、値のみ提示
+            body = f"""
+<div class="card">
+  <div class="card-header">ヒント（確認）</div>
+  <div class="card-body">
+    <p class="h5 mb-3">提示されたヒントの値： <span class="badge bg-warning text-dark">{fake['value']}</span></p>
+    <p class="mb-3">このヒントはブラフだと思いますか？</p>
+    <form method="post" class="d-inline me-2">
+      <input type="hidden" name="action" value="h">
+      <input type="hidden" name="bluff_decision" value="believe">
+      <button class="btn btn-primary">信じる</button>
+    </form>
+    <form method="post" class="d-inline">
+      <input type="hidden" name="action" value="h">
+      <input type="hidden" name="bluff_decision" value="accuse">
+      <button class="btn btn-outline-light">ブラフだ！と指摘する</button>
+    </form>
+    <div class="mt-3"><a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a></div>
+  </div>
+</div>
+"""
+            return bootstrap_page("ヒント確認", body)
+        else:
+            if decision == 'believe':
+                push_log(room, f"{myname} は 提示ヒント（{fake['value']}）を受け入れた")
+                room['bluff'][opp] = None
+                if room['hint_penalty_active'][pid]:
+                    room['hint_ct'][pid] = 1
+                switch_turn(room, pid)
+                return redirect(url_for('play', room_id=get_current_room_id()))
+            else:
+                # ブラフ成功：本物のヒントを2連続で提供
+                _hint_once(room, pid, chose_by_user=False, silent=False)
+                _hint_once(room, pid, chose_by_user=False, silent=False)
+                room['bluff'][opp] = None
+                if room['hint_penalty_active'][pid]:
+                    room['hint_ct'][pid] = 1
+                switch_turn(room, pid)
+                return redirect(url_for('play', room_id=get_current_room_id()))
+
+    # ペナルティによるヒントCTの確認
+    if room['hint_ct'][pid] > 0:
+        push_log(room, "（ヒントはクールタイム中）")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
     # 種類を明示選択したかどうか
     chose_by_user = False
     if room['hint_choice_available'][pid] and form.get('confirm_choice'):
-      chose_by_user = True
+        chose_by_user = True
 
     if chose_by_user:
-      hint_type = form.get('hint_type')
-      room['hint_choice_available'][pid] = False
+        hint_type = form.get('hint_type')
+        room['hint_choice_available'][pid] = False
+        # 指定ヒント：種類は表示、在庫は消費しない（従来仕様）
+        opp_secret = room['secret'][2 if pid == 1 else 1]
+        hidden = room['hidden']
+        if hint_type == '和':
+            val = opp_secret + hidden
+        elif hint_type == '差':
+            val = abs(opp_secret - hidden)
+        else:
+            val = opp_secret * hidden
+        push_log(room, f"{myname} が h（ヒント取得）{hint_type}＝{val}")
     else:
-      stock = room['available_hints'][pid]
-      if not stock:
-        push_log(room, "（このラウンドのヒントは出尽くしました）")
-        switch_turn(room, pid)
-        return redirect(url_for('play', room_id=get_current_room_id()))
-      hint_type = random.choice(stock)
-      stock.remove(hint_type)
+        # ランダム在庫消費
+        stock = room['available_hints'][pid]
+        if not stock:
+            push_log(room, "（このラウンドのヒントは出尽くしました）")
+            switch_turn(room, pid)
+            return redirect(url_for('play', room_id=get_current_room_id()))
+        _hint_once(room, pid, chose_by_user=False, silent=False)
 
-    opp = 2 if pid == 1 else 1
-    opp_secret = room['secret'][opp]
-    hidden = room['hidden']
-    if hint_type == '和':
-      val = opp_secret + hidden
-    elif hint_type == '差':
-      val = abs(opp_secret - hidden)
-    else:
-      val = opp_secret * hidden
-
-    # ログ：数値は常に残す。種類は自分で選んだ時のみ付ける
-    if chose_by_user:
-      push_log(room, f"{myname} が h（ヒント取得）{hint_type}＝{val}")
-    else:
-      push_log(room, f"{myname} が h（ヒントを取得）＝{val}")
+    if room['hint_penalty_active'][pid]:
+        room['hint_ct'][pid] = 1
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
@@ -733,49 +902,155 @@ def handle_change(room, pid, new_secret):
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
-def handle_trap(room, pid, form):
+
+
+def handle_trap_kill(room, pid, form):
     myname = room['pname'][pid]
-    kind = form.get('trap_kind')
+    eff_min, eff_max = room['eff_num_min'], room['eff_num_max']
+    my_secret = room['secret'][pid]
+    v = form.get('trap_kill_value')
+    try:
+        x = int(v)
+    except Exception:
+        push_log(room, "⚠ 無効なkillトラップ値です。")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+    # 範囲＆自分の数／絶対値一致を禁止
+    if not (eff_min <= x <= eff_max) or x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+        push_log(room, "⚠ 無効なkillトラップ値です。")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+    room['trap_kill'][pid].clear()
+    room['trap_kill'][pid].append(x)
+    push_log(room, f"{myname} が killトラップを {x} に設定")
+    # kill はターン消費あり（従来どおり）
+    switch_turn(room, pid)
+    return redirect(url_for('play', room_id=get_current_room_id()))
+
+
+
+def handle_trap_info(room, pid, form):
+    myname = room['pname'][pid]
     eff_min, eff_max = room['eff_num_min'], room['eff_num_max']
     my_secret = room['secret'][pid]
 
-    def valid_trap_val(v):
-        if v is None: return False
-        try:
-            x = int(v)
-        except:
-            return False
-        if not (eff_min <= x <= eff_max):
-            return False
-        if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
-            return False
-        return True
+    # モード判定：チェックありなら "まとめて最大3個（ターン消費）"
+    bulk = form.get('info_bulk') in ('1', 'on', 'true', 'True')
 
-    if kind == 'k':
-        v = form.get('trap_kill_value')
-        if valid_trap_val(v):
-            x = int(v)
-            room['trap_kill'][pid].clear()
-            room['trap_kill'][pid].append(x)
-            push_log(room, f"{myname} が killトラップを {x} に設定")
-        else:
-            push_log(room, "⚠ 無効なkillトラップ値です。")
-    elif kind == 'i':
-        added = []
-        for key in ('trap_info_value_0','trap_info_value_1','trap_info_value_2'):
+    # まとめて置く（ターン消費）
+    if bulk:
+        # 無料1個を今ターンすでに置いている場合は不可（同ターンに両方はNG）
+        if room['info_set_this_turn'][pid]:
+            push_log(room, "（このターンは既に無料のinfoを設定しています。3個まとめては次の自分のターンで）")
+            return redirect(url_for('play', room_id=get_current_room_id()))
+
+        candidates = ('trap_info_value', 'trap_info_value_1', 'trap_info_value_2', 'trap_info_val')
+        added_list = []
+        for key in candidates:
             v = form.get(key)
-            if valid_trap_val(v) and len(room['trap_info'][pid]) < 5:
+            if v is None or v == '':
+                continue
+            try:
                 x = int(v)
-                if x not in room['trap_info'][pid]:
-                    room['trap_info'][pid].append(x)
-                    added.append(x)
-        if added:
-            push_log(room, f"{myname} が infoトラップを {', '.join(map(str, added))} に設定")
+            except Exception:
+                continue
+            # バリデーション
+            if not (eff_min <= x <= eff_max):
+                continue
+            if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+                continue
+            if x in room['trap_info'][pid] or x in added_list:
+                continue
+            if len(room['trap_info'][pid]) >= INFO_MAX:
+                break
+            added_list.append(x)
+
+        if added_list:
+            room['trap_info'][pid].extend(added_list)
+            room['info_set_this_turn'][pid] = True  # このターンにinfoを置いた扱い
+            push_log(room, f"{myname} が infoトラップをまとめて設定 → {', '.join(map(str, added_list))}（ターン消費）")
+            # まとめ置きはターン消費 → 交代
+            switch_turn(room, pid)
         else:
             push_log(room, "⚠ infoトラップの追加はありません。")
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
+    # ここからは 無料で1個（ターン消費なし）
+    if room['info_set_this_turn'][pid]:
+        push_log(room, "（このターンは既にinfoを設定しています）")
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
+    # 受け取り候補（先頭の有効な1個だけ追加）
+    candidates = ('trap_info_value', 'trap_info_value_1', 'trap_info_value_2', 'trap_info_val')
+    added = None
+    for key in candidates:
+        v = form.get(key)
+        if v is None or v == '':
+            continue
+        try:
+            x = int(v)
+        except Exception:
+            continue
+        # バリデーション
+        if not (eff_min <= x <= eff_max):
+            continue
+        if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+            continue
+        if x in room['trap_info'][pid]:
+            continue
+        if len(room['trap_info'][pid]) >= INFO_MAX:
+            push_log(room, f"（infoは最大{INFO_MAX}個までです）")
+            return redirect(url_for('play', room_id=get_current_room_id()))
+        added = x
+        break
+
+    if added is not None:
+        room['trap_info'][pid].append(added)
+        room['info_set_this_turn'][pid] = True
+        push_log(room, f"{myname} が infoトラップを {added} に設定（ターン消費なし／このターンは1個まで）")
+    else:
+        push_log(room, "⚠ infoトラップの追加はありません。")
+
+    # 無料モードはターン消費なし → 交代しない
+    return redirect(url_for('play', room_id=get_current_room_id()))
+
+
+def handle_trap(room, pid, form):
+    """共通トラップハンドラ（UIの action='t' から来る）"""
+    kind = form.get('trap_kind')
+    if kind == 'k':
+        return handle_trap_kill(room, pid, form)
+    elif kind == 'i':
+        return handle_trap_info(room, pid, form)
     else:
         push_log(room, "⚠ 無効なトラップ種別です。")
+        return redirect(url_for('play', room_id=get_current_room_id()))
 
+def handle_bluff(room, pid, form):
+    """ブラフヒントを設定（ターン消費あり）。次回 相手がヒント要求時に表示される。"""
+    myname = room['pname'][pid]
+    btype = form.get('bluff_type') or '和'
+    try:
+        bval = int(form.get('bluff_value'))
+    except:
+        push_log(room, "⚠ ブラフ値が不正です。")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+    room['bluff'][pid] = {'type': btype, 'value': bval}
+    push_log(room, f"{myname} が ブラフヒント を仕掛けた")
+    switch_turn(room, pid)
+    return redirect(url_for('play', room_id=get_current_room_id()))
+
+def handle_guessflag(room, pid):
+    """ゲスフラグを立てる（ターン消費、CT2）。相手が“次のターン”に予想したら以降その相手の予想は常にCT1。"""
+    myname = room['pname'][pid]
+    if room['guess_flag_ct'][pid] > 0:
+        push_log(room, "⚠ ゲスフラグはクールタイム中です。")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+    room['guess_flag_armed'][pid] = True
+    room['guess_flag_ct'][pid] = 2
+    push_log(room, f"{myname} が ゲスフラグ を立てた")
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
