@@ -144,9 +144,11 @@ def init_room(allow_negative: bool, target_points: int):
         'hint_penalty_active': {1: False, 2: False}, # 以降 ヒント後にCT1
         'hint_ct': {1: 0, 2: 0},                     # 現在ヒントCT残り
         'guess_flag_armed': {1: False, 2: False},    # 次の相手ターンの予想を監視
-        'guess_flag_ct': {1: 0, 2: 0},               # ゲスフラグ再使用CT
-        'guess_penalty_active': {1: False, 2: False},# 以降 予想後にCT1
+        'guess_flag_ct': {1: 0, 2: 0},               # （※今回は使わないが残しておく）
+        'guess_penalty_active': {1: False, 2: False},# 旧仕様の名残（残してOK）
         'guess_ct': {1: 0, 2: 0},                    # 現在予想CT残り
+        'guess_flag_warn': {1: False, 2: False},     # 失効後に相手へ遅延通知するためのフラグ
+        'guess_flag_used': {1: False, 2: False},     # このラウンドで使用済みか
     }
 
 def room_or_404(rid):
@@ -187,11 +189,13 @@ def switch_turn(room, cur_pid):
     # infoは1ターン1個の制限。相手の新しいターン開始時に解除
     room['info_set_this_turn'][opp] = False
 
-    # ゲスフラグは「相手の次のターン」限定なので、そのターンが終わったら解除
-    if cur_pid == 1 and room['guess_flag_armed'][2]:
-        room['guess_flag_armed'][2] = False
-    if cur_pid == 2 and room['guess_flag_armed'][1]:
-        room['guess_flag_armed'][1] = False
+    # ゲスフラグは「相手の次のターン」限定。
+    # いま終わったのは cur_pid のターン。もし相手（gf_owner）が立てたフラグがまだ生きているなら、
+    # この cur_pid のターン中に予想しなかった＝未発動。ここで失効させ、cur_pid に遅延警告をセット。
+    gf_owner = 2 if cur_pid == 1 else 1
+    if room['guess_flag_armed'][gf_owner]:
+        room['guess_flag_armed'][gf_owner] = False
+        room['guess_flag_warn'][cur_pid] = True
 
 # ====== ルーティング ======
 
@@ -268,7 +272,14 @@ def room_lobby(room_id):
 <div class="card mb-3">
   <div class="card-header">ルーム {room_id}</div>
   <div class="card-body">
-    <p class="mb-2">このURLを相手に送ってください。</p>
+  <!-- ルーム番号を大きく表示 -->
+  <div class="p-3 rounded border border-secondary mb-3">
+    <div class="small text-warning">ルーム番号</div>
+    <div class="h1 m-0 value">{room_id}</div>
+    <div class="small">相手は「ホーム → ルームに参加」でこの番号を入力してください。</div>
+  </div>
+
+  <p class="mb-2">URLを共有したい場合はこちらを送ってください。</p>
     <div class="row g-2">
       <div class="col-12 col-md-6">
         <div class="p-2 rounded border border-secondary">
@@ -358,6 +369,8 @@ def start_new_round(room):
     room['guess_flag_ct'] = {1: 0, 2: 0}
     room['guess_penalty_active'] = {1: False, 2: False}
     room['guess_ct'] = {1: 0, 2: 0}
+    room['guess_flag_warn'] = {1: False, 2: False}
+    room['guess_flag_used'] = {1: False, 2: False}
     # 先手/後手のヒント指定可フラグ
     if room['starter'] == 1:
         room['hint_choice_available'] = {1: False, 2: True}
@@ -394,7 +407,14 @@ def play(room_id):
 <div class="card mb-3">
   <div class="card-header">相手を待っています…</div>
   <div class="card-body">
-    <div class="alert alert-info">あなたは <span class="value">プレイヤー{pid}</span> として参加済みです。相手が参加すると自動で開始します。</div>
+  <!-- ルーム番号を大きく表示 -->
+  <div class="p-3 rounded border border-secondary mb-3">
+    <div class="small text-warning">ルーム番号</div>
+    <div class="h1 m-0 value">{room_id}</div>
+    <div class="small">相手は「ホーム → ルームに参加」でこの番号を入力できます。</div>
+  </div>
+
+  <div class="alert alert-info">あなたは <span class="value">プレイヤー{pid}</span> として参加済みです。相手が参加すると自動で開始します。</div>
     <p class="mb-2">相手に送るべきリンクは <span class="value">プレイヤー{opp}用リンク</span> です。</p>
     <div class="row g-2">
       <div class="col-12 col-md-6">
@@ -593,9 +613,9 @@ def play(room_id):
         <form method="post" class="p-2 border rounded">
           <input type="hidden" name="action" value="gf">
           <label class="form-label">ゲスフラグを立てる</label>
-          <div class="small text-warning mb-2">次の相手ターンに予想してきたら、その後 相手の予想は常にCT1</div>
-          <button class="btn btn-outline-light w-100" {"disabled" if room['guess_flag_ct'][pid] > 0 else ""}>立てる（CT2）</button>
-          <div class="small text-warning mt-1">{ "（ゲスフラグはクールタイム中）" if room['guess_flag_ct'][pid] > 0 else "" }</div>
+            <div class="small text-warning mb-2">次の相手ターンに予想してきたら相手は即死（このラウンド1回まで）</div>
+            <button class="btn btn-outline-light w-100" {"disabled" if room['guess_flag_used'][pid] else ""}>立てる（このラウンド1回）</button>
+            <div class="small text-warning mt-1">{ "（このラウンドは既に使用しました）" if room['guess_flag_used'][pid] else "" }</div>
         </form>
       </div>
 
@@ -757,11 +777,13 @@ def handle_guess(room, pid, guess):
     # 回数
     room['tries'][pid] += 1
 
-    # 相手がゲスフラグを直前に立てていた→この予想で発動
+    # 相手がゲスフラグを直前に立てていた→この予想で発動（相手は即死）
     if room['guess_flag_armed'][opp]:
-        room['guess_penalty_active'][pid] = True
         room['guess_flag_armed'][opp] = False
-        push_log(room, f"（{room['pname'][opp]} のゲスフラグが発動！以降、{room['pname'][pid]} の予想は常にCT1）")
+        push_log(room, f"（{room['pname'][opp]} のゲスフラグが発動！{room['pname'][pid]} は即死）")
+        room['score'][opp] += 1
+        room['winner'] = opp
+        return redirect(url_for('end_round', room_id=get_current_room_id()))
 
     # まず「正解」優先
     if guess == opponent_secret:
@@ -777,6 +799,7 @@ def handle_guess(room, pid, guess):
     # ±1 即死（相手勝利）
     if any(abs(guess - k) <= 1 for k in kill):
         push_log(room, f"{myname} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）")
+        room['score'][opp] += 1
         room['winner'] = opp
         return redirect(url_for('end_round', room_id=get_current_room_id()))
 
@@ -865,31 +888,31 @@ def handle_hint(room, pid, form):
         else:
             # ブラフ未設定でも必ず質問する（値は提示しない）
             body = f"""
-<div class="card">
-  <div class="card-header">ヒント（確認）</div>
-  <div class="card-body">
-    <p class="mb-3">このヒントはブラフだと思いますか？</p>
-
-    <form method="post" class="d-inline me-2">
-      <input type="hidden" name="action" value="h">
-      <input type="hidden" name="bluff_decision" value="believe">
-      {keep}
-      <button class="btn btn-primary">信じない（通常のヒントを受け取る）</button>
-    </form>
-
-    <form method="post" class="d-inline">
-      <input type="hidden" name="action" value="h">
-      <input type="hidden" name="bluff_decision" value="accuse">
-      {keep}
-      <button class="btn btn-outline-light">ブラフだ！と指摘する</button>
-    </form>
-
-    <div class="mt-3">
-      <a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a>
+    <div class="card">
+      <div class="card-header">ヒント（確認）</div>
+      <div class="card-body">
+        <p class="mb-3">このヒントはブラフだと思いますか？</p>
+    
+        <form method="post" class="d-inline me-2">
+          <input type="hidden" name="action" value="h">
+          <input type="hidden" name="bluff_decision" value="believe">
+          {keep}
+          <button class="btn btn-primary">信じる（通常のヒントを受け取る）</button>
+        </form>
+    
+        <form method="post" class="d-inline">
+          <input type="hidden" name="action" value="h">
+          <input type="hidden" name="bluff_decision" value="accuse">
+          {keep}
+          <button class="btn btn-outline-light">ブラフだ！と指摘する</button>
+        </form>
+    
+        <div class="mt-3">
+          <a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a>
+        </div>
+      </div>
     </div>
-  </div>
-</div>
-"""
+    """
         return bootstrap_page("ヒント確認", body)
 
     # --- ここから意思決定後の処理 ---
@@ -1105,14 +1128,14 @@ def handle_bluff(room, pid, form):
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_guessflag(room, pid):
-    """ゲスフラグを立てる（ターン消費、CT2）。相手が“次のターン”に予想したら以降その相手の予想は常にCT1。"""
+    """ゲスフラグを立てる（ターン消費）。相手が“次のターン”に予想したら相手は即死。1ラウンド1回まで。"""
     myname = room['pname'][pid]
-    if room['guess_flag_ct'][pid] > 0:
-        push_log(room, "⚠ ゲスフラグはクールタイム中です。")
+    if room['guess_flag_used'][pid]:
+        push_log(room, "⚠ このラウンドでは既にゲスフラグを使っています。")
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
     room['guess_flag_armed'][pid] = True
-    room['guess_flag_ct'][pid] = 2
+    room['guess_flag_used'][pid] = True
     push_log(room, f"{myname} が ゲスフラグ を立てた")
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
