@@ -99,7 +99,7 @@ def bootstrap_page(title, body_html):
 <body>
   <div class="container py-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <h1 class="h4 m-0">Number Battle</h1>
+      <h1 class="h4 m-0">やまやまやま</h1>
       <a class="btn btn-sm btn-outline-light" href="{{ url_for('index') }}">ホームへ</a>
     </div>
     {{ body|safe }}
