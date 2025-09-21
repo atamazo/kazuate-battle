@@ -125,7 +125,7 @@ def init_room(allow_negative: bool, target_points: int):
         'hidden': None,
         'tries': {1:0, 2:0},
         'available_hints': {1: ['和','差','積'], 2: ['和','差','積']},
-        'hint_choice_available': {1: False, 2: True},  # 毎ラウンド後攻のみ可
+        'hint_choice_available': {1: False, 2: True},  # 毎ラウンド後攻のみ可（ベースルール）
         'cooldown': {1:0, 2:0},  # c のCT（自分の番カウント）
         'trap_kill': {1: [], 2: []}, # ±1即死, ±5次ターンスキップ
         'trap_info': {1: [], 2: []}, # 踏むと相手が次ターン以降ログ閲覧可
@@ -133,22 +133,34 @@ def init_room(allow_negative: bool, target_points: int):
         'can_view': {1: False, 2: False},
         'view_cut_index': {1: None, 2: None},
         'skip_next_turn': {1: False, 2: False},
-        'info_set_this_turn': {1: False, 2: False},  # ★当ターンにinfoを1個置いたか
+        'info_set_this_turn': {1: False, 2: False},  # 当ターンにinfoを1個置いたか
         'actions': [],
         'winner': None,   # ラウンド勝者(1 or 2)
         'phase': 'lobby', # lobby -> play -> end_round
         'starter': 1,     # 次ラウンドの先手（負け側に自動切替）
 
-        # === 新要素（ブラフヒント & ゲスフラグ／各種CT） ===
-        'bluff': {1: None, 2: None},                 # 次回 相手がヒント要求時に表示する偽ヒント
-        'hint_penalty_active': {1: False, 2: False}, # 以降 ヒント後にCT1
-        'hint_ct': {1: 0, 2: 0},                     # 現在ヒントCT残り
-        'guess_flag_armed': {1: False, 2: False},    # 次の相手ターンの予想を監視
-        'guess_flag_ct': {1: 0, 2: 0},               # （※今回は使わないが残しておく）
-        'guess_penalty_active': {1: False, 2: False},# 旧仕様の名残（残してOK）
-        'guess_ct': {1: 0, 2: 0},                    # 現在予想CT残り
-        'guess_flag_warn': {1: False, 2: False},     # 失効後に相手へ遅延通知するためのフラグ
-        'guess_flag_used': {1: False, 2: False},     # このラウンドで使用済みか
+        # === 既存：ブラフヒント／ゲスフラグ ===
+        'bluff': {1: None, 2: None},
+        'hint_penalty_active': {1: False, 2: False},
+        'hint_ct': {1: 0, 2: 0},
+        'guess_flag_armed': {1: False, 2: False},
+        'guess_flag_ct': {1: 0, 2: 0},
+        'guess_penalty_active': {1: False, 2: False},
+        'guess_ct': {1: 0, 2: 0},
+        'guess_flag_warn': {1: False, 2: False},
+        'guess_flag_used': {1: False, 2: False},
+
+        # === 新規：一の位宣言 ===
+        'decl1_value': {1: None, 2: None},      # 宣言した一の位（0〜9）
+        'decl1_used': {1: False, 2: False},     # 各ラウンド1回
+        'decl1_resolved': {1: True, 2: True},   # 宣言が解決済みか（最初は解決扱い）
+        'decl1_hint_token_ready': {1: False, 2: False},   # 宣言者の「次の自分ターンだけ種類指定可」予約
+        'decl1_hint_token_active': {1: False, 2: False},  # 上記が有効化中（そのターン限定）
+        'free_guess_pending': {1: False, 2: False},       # 嘘だ！成功で直後の無料予想待ち
+
+        # === 新規：サドン・プレス（Double or Nothing） ===
+        'press_used': {1: False, 2: False},     # ラウンド1回まで
+        'press_pending': {1: False, 2: False},  # ハズレ直後の追撃予想待ち
     }
 
 def room_or_404(rid):
@@ -188,6 +200,15 @@ def switch_turn(room, cur_pid):
     room['turn'] = opp
     # infoは1ターン1個の制限。相手の新しいターン開始時に解除
     room['info_set_this_turn'][opp] = False
+
+    # 一の位宣言：次の自分ターンだけ種類指定可（トークン適用/失効）
+    if room['decl1_hint_token_active'].get(cur_pid):
+        room['decl1_hint_token_active'][cur_pid] = False  # 使わなかった場合はここで失効
+    if room['decl1_hint_token_ready'].get(opp):
+        room['decl1_hint_token_ready'][opp] = False
+        room['decl1_hint_token_active'][opp] = True
+
+    # ゲスフラグは……（既存のブロック続行）
 
     # ゲスフラグは「相手の次のターン」限定。
     # いま終わったのは cur_pid のターン。もし相手（gf_owner）が立てたフラグがまだ生きているなら、
@@ -350,6 +371,7 @@ def join_form(room_id, player_id, error=None):
 
 def start_new_round(room):
     # ラウンド開始（両者の秘密の数字が入ったタイミングで）
+    
     room['hidden'] = random.randint(room['eff_hidden_min'], room['eff_hidden_max'])
     room['tries'] = {1:0, 2:0}
     room['actions'] = []
@@ -359,7 +381,7 @@ def start_new_round(room):
     room['can_view'] = {1: False, 2: False}
     room['view_cut_index'] = {1: None, 2: None}
     room['skip_next_turn'] = {1: False, 2: False}
-    room['info_set_this_turn'] = {1: False, 2: False}  # ★ラウンド開始でリセット
+    room['info_set_this_turn'] = {1: False, 2: False}
     room['cooldown'] = {1: 0, 2: 0}
     room['available_hints'] = {1: ['和','差','積'], 2: ['和','差','積']}
     room['bluff'] = {1: None, 2: None}
@@ -371,6 +393,19 @@ def start_new_round(room):
     room['guess_ct'] = {1: 0, 2: 0}
     room['guess_flag_warn'] = {1: False, 2: False}
     room['guess_flag_used'] = {1: False, 2: False}
+
+    # 一の位宣言
+    room['decl1_value'] = {1: None, 2: None}
+    room['decl1_used'] = {1: False, 2: False}
+    room['decl1_resolved'] = {1: True, 2: True}
+    room['decl1_hint_token_ready'] = {1: False, 2: False}
+    room['decl1_hint_token_active'] = {1: False, 2: False}
+    room['free_guess_pending'] = {1: False, 2: False}
+
+    # サドン・プレス
+    room['press_used'] = {1: False, 2: False}
+    room['press_pending'] = {1: False, 2: False}
+    
     # 先手/後手のヒント指定可フラグ
     if room['starter'] == 1:
         room['hint_choice_available'] = {1: False, 2: True}
@@ -451,12 +486,13 @@ def play(room_id):
         push_log(room, f"{room['pname'][room['turn']]} のターンは近接トラップ効果でスキップ")
         switch_turn(room, room['turn'])
 
-    # POST: アクション処理
+        # POST: アクション処理
     if request.method == 'POST':
         if room['turn'] != pid:
             return redirect(url_for('play', room_id=room_id))  # 自分の番でなければ無視
         try:
             action = request.form.get('action')
+
             if action == 'g':
                 guess_val = get_int(request.form, 'guess',
                                     default=None,
@@ -491,13 +527,34 @@ def play(room_id):
             elif action == 'gf':
                 return handle_guessflag(room, pid)
 
+            elif action == 'decl1':
+                return handle_decl1(room, pid, request.form)
+
+            elif action == 'decl1_challenge':
+                return handle_decl1_challenge(room, pid)
+
+            elif action == 'press':
+                press_val = get_int(request.form, 'press_guess',
+                                    default=None,
+                                    min_v=room['eff_num_min'], max_v=room['eff_num_max'])
+                if press_val is None:
+                    return push_and_back(room, pid, "⚠ サドン・プレスの値が不正です。")
+                return handle_press(room, pid, press_val)
+
+            elif action == 'free_guess':
+                fg_val = get_int(request.form, 'free_guess',
+                                 default=None,
+                                 min_v=room['eff_num_min'], max_v=room['eff_num_max'])
+                if fg_val is None:
+                    return push_and_back(room, pid, "⚠ 無料予想の値が不正です。")
+                return handle_free_guess(room, pid, fg_val)
+
             else:
                 return push_and_back(room, pid, "⚠ 不明なアクションです。")
 
         except Exception:
             app.logger.exception("POST処理中の例外")
             return redirect(url_for('index'))
-
     # 表示用データ
     p1, p2 = room['pname'][1], room['pname'][2]
     myname = room['pname'][pid]
@@ -531,10 +588,45 @@ def play(room_id):
 
     log_html = "".join(f"<li>{e}</li>" for e in filtered)
 
-    # 自分の番フォーム
+        # 自分の番フォーム
     my_turn_block = ""
     if room['turn'] == pid:
-        my_turn_block = f"""
+        # 無料予想（嘘だ！成功時）優先
+        if room['free_guess_pending'][pid]:
+            my_turn_block = f"""
+<div class="card mb-3">
+  <div class="card-header">無料予想（嘘だ！成功）</div>
+  <div class="card-body">
+    <form method="post" class="p-2 border rounded">
+      <input type="hidden" name="action" value="free_guess">
+      <label class="form-label">もう一度だけ無料で予想できます</label>
+      <input class="form-control mb-2" name="free_guess" type="number" required placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
+      <button class="btn btn-primary w-100">予想を送る</button>
+      <div class="small text-warning mt-1">※ トラップは有効（±1即死/±5スキップ/info）。ゲスフラグは発動しません。</div>
+    </form>
+  </div>
+</div>
+"""
+        # サドン・プレス（直後追撃）
+        elif room['press_pending'][pid]:
+            my_turn_block = f"""
+<div class="card mb-3">
+  <div class="card-header">サドン・プレス（Double or Nothing）</div>
+  <div class="card-body">
+    <form method="post" class="p-2 border rounded">
+      <input type="hidden" name="action" value="press">
+      <label class="form-label">さっきのハズレ直後に、もう一回だけ連続で予想できます</label>
+      <input class="form-control mb-2" name="press_guess" type="number" required placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
+      <button class="btn btn-primary w-100">もう一回だけ予想！</button>
+      <div class="small text-warning mt-1">※ 当たれば勝利。外すと次ターンスキップ（このラウンド1回まで）。</div>
+    </form>
+  </div>
+</div>
+"""
+        else:
+            # 通常アクション（宣言・嘘だ！コール含む）
+            choose_allowed = room['hint_choice_available'][pid] or room['decl1_hint_token_active'][pid]
+            my_turn_block = f"""
 <div class="card mb-3">
   <div class="card-header">アクション</div>
   <div class="card-body">
@@ -554,9 +646,9 @@ def play(room_id):
           <input type="hidden" name="action" value="h">
           <div class="mb-2">
             <label class="form-label">ヒント</label>
-            { "<div class='mb-2'><label class='form-label'>種類を指定</label><select class='form-select' name='hint_type'><option>和</option><option>差</option><option>積</option></select><input type='hidden' name='confirm_choice' value='1'></div>" if room['hint_choice_available'][pid] else "<div class='small text-warning mb-2'>(このラウンドは種類指定不可。ランダム)</div>" }
+            { "<div class='mb-2'><label class='form-label'>種類を指定</label><select class='form-select' name='hint_type'><option>和</option><option>差</option><option>積</option></select><input type='hidden' name='confirm_choice' value='1'></div>" if choose_allowed else "<div class='small text-warning mb-2'>(このターンは種類指定不可。ランダム)</div>" }
           </div>
-          <button class="btn btn-outline-light w-100" {"disabled" if room['hint_ct'][pid] > 0 or not hint_available else ""}>ヒントをもらう</button>
+          <button class="btn btn-outline-light w-100" {"disabled" if room['hint_ct'][pid] > 0 else ""}>ヒントをもらう</button>
           <div class="small text-warning mt-1">{ "（ヒントはクールタイム中）" if room['hint_ct'][pid] > 0 else "" }</div>
         </form>
       </div>
@@ -566,7 +658,7 @@ def play(room_id):
           <input type="hidden" name="action" value="c">
           <label class="form-label">自分の数を変更</label>
           <input class="form-control mb-2" name="new_secret" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
-          <button class="btn btn-outline-light w-100" {"disabled" if not c_available else ""}>変更する（CT2）</button>
+          <button class="btn btn-outline-light w-100" {"disabled" if room['cooldown'][pid] > 0 else ""}>変更する（CT2）</button>
         </form>
       </div>
 
@@ -613,41 +705,42 @@ def play(room_id):
         <form method="post" class="p-2 border rounded">
           <input type="hidden" name="action" value="gf">
           <label class="form-label">ゲスフラグを立てる</label>
-            <div class="small text-warning mb-2">次の相手ターンに予想してきたら相手は即死（このラウンド1回まで）</div>
-            <button class="btn btn-outline-light w-100" {"disabled" if room['guess_flag_used'][pid] else ""}>立てる（このラウンド1回）</button>
-            <div class="small text-warning mt-1">{ "（このラウンドは既に使用しました）" if room['guess_flag_used'][pid] else "" }</div>
+          <div class="small text-warning mb-2">次の相手ターンに予想してきたら相手は即死（このラウンド1回まで）</div>
+          <button class="btn btn-outline-light w-100" {"disabled" if room['guess_flag_used'][pid] else ""}>立てる（このラウンド1回）</button>
+          <div class="small text-warning mt-1">{ "（このラウンドは既に使用しました）" if room['guess_flag_used'][pid] else "" }</div>
         </form>
       </div>
+
+      <div class="col-12 col-md-6">
+        <form method="post" class="p-2 border rounded">
+          <input type="hidden" name="action" value="decl1">
+          <label class="form-label">一の位を宣言（0〜9）</label>
+          <input class="form-control mb-2" name="decl1_digit" type="number" min="0" max="9" {"required" if not room['decl1_used'][pid] else "disabled"} placeholder="0〜9">
+          <button class="btn btn-outline-light w-100" {"disabled" if room['decl1_used'][pid] else ""}>宣言（ターン消費なし）</button>
+          <div class="small text-warning mt-1">{ "（このラウンドは既に宣言済み）" if room['decl1_used'][pid] else "宣言すると、次の自分ターンだけヒントの種類を指定できます（1回）。" }</div>
+        </form>
+      </div>
+
+      { f'''
+      <div class="col-12 col-md-6">
+        <form method="post" class="p-2 border rounded">
+          <input type="hidden" name="action" value="decl1_challenge">
+          <label class="form-label">相手の「一の位」宣言にチャレンジ</label>
+          <button class="btn btn-outline-light w-100">嘘だ！コール</button>
+          <div class="small text-warning mt-1">嘘なら正しい一の位公開＋直後に無料予想。真ならあなたは次ターンスキップ。</div>
+        </form>
+      </div>
+      ''' if (room['decl1_value'][opp] is not None and not room['decl1_resolved'][opp]) else '' }
 
     </div>
   </div>
 </div>
 """
-
+    # 右側パネル等と合わせてページ本体を組み立て
     body = f"""
 <div class="row g-3">
   <div class="col-12 col-lg-8">
-    <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <div>ルーム <span class="badge bg-secondary">{room_id}</span></div>
-        <div>ラウンド <span class="badge bg-info">{room['round_no']}</span></div>
-      </div>
-      <div class="card-body">
-        <div class="d-flex flex-wrap gap-2 align-items-center">
-          <div class="me-auto">
-            <div class="h5 m-0">{room['pname'][1]} <span class="badge bg-light text-dark">{room['score'][1]}</span>
-              <span class="mx-2">-</span>
-              <span class="badge bg-light text-dark">{room['score'][2]}</span> {room['pname'][2]}
-            </div>
-            <div class="small text-warning">先取 {room['target_points']}</div>
-          </div>
-          <div><span class="badge bg-primary">{room['pname'][room['turn']]} のターン</span></div>
-        </div>
-      </div>
-    </div>
-
     {my_turn_block}
-
     <div class="card">
       <div class="card-header">アクション履歴</div>
       <div class="card-body">
@@ -818,8 +911,12 @@ def handle_guess(room, pid, guess):
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
 
-    # 通常ハズレ
+    # 通常ハズレ → サドン・プレスのチャンス
     push_log(room, f"{myname} が g（予想）→ {guess}（ハズレ）")
+    if not room['press_used'][pid] and not room['press_pending'][pid]:
+        room['press_pending'][pid] = True   # 直後の追撃を許可（同一ターン内）
+        return redirect(url_for('play', room_id=get_current_room_id()))
+    # サドン・プレスを既に使っている/保留中なら通常処理へ
     if room['guess_penalty_active'][pid]:
         room['guess_ct'][pid] = 1
     switch_turn(room, pid)
@@ -945,9 +1042,15 @@ def handle_hint(room, pid, form):
             switch_turn(room, pid)
             return redirect(url_for('play', room_id=get_current_room_id()))
         else:
+            
             # 信じる → 通常のヒント実行（種類指定があればそれを使う）
-            if want_choose and room['hint_choice_available'][pid] and choose_type in ('和','差','積'):
-                room['hint_choice_available'][pid] = False
+            allow_choose_now = want_choose and (room['hint_choice_available'][pid] or room['decl1_hint_token_active'][pid]) and choose_type in ('和','差','積')
+            if allow_choose_now:
+                # ベース権利 or 宣言トークンのどちらかを消費
+                if room['hint_choice_available'][pid]:
+                    room['hint_choice_available'][pid] = False
+                else:
+                    room['decl1_hint_token_active'][pid] = False
                 opp_secret = room['secret'][2 if pid == 1 else 1]
                 hidden = room['hidden']
                 if choose_type == '和':
@@ -1013,7 +1116,153 @@ def handle_trap_kill(room, pid, form):
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
+def handle_decl1(room, pid, form):
+    """一の位の宣言（各ラウンド1回、ターン消費なし）。
+       宣言者には『次の自分ターンだけヒント種類指定可（1回）』のトークンを配布。
+    """
+    myname = room['pname'][pid]
+    if room['decl1_used'][pid]:
+        return push_and_back(room, pid, "（このラウンドは既に宣言しています）")
+    d = get_int(form, 'decl1_digit', default=None, min_v=0, max_v=9)
+    if d is None:
+        return push_and_back(room, pid, "⚠ 一の位は0〜9で入力してください。")
+    room['decl1_value'][pid] = d
+    room['decl1_used'][pid] = True
+    room['decl1_resolved'][pid] = False
+    push_log(room, f"{myname} が 一の位を宣言")
+    # 次の自分ターンにだけ有効化するトークン
+    room['decl1_hint_token_ready'][pid] = True
+    # ターン消費なし
+    return redirect(url_for('play', room_id=get_current_room_id()))
 
+def handle_decl1_challenge(room, pid):
+    """嘘だ！コール。嘘なら正しい一の位を公開し、直後に無料予想。
+       真ならコール側が次ターンスキップ。いずれもターンは消費。
+    """
+    myname = room['pname'][pid]
+    opp = 2 if pid == 1 else 1
+    if room['decl1_value'][opp] is None or room['decl1_resolved'][opp]:
+        return push_and_back(room, pid, "（相手の宣言は現在チャレンジできません）")
+    # 真偽判定（負の数は絶対値で一の位を取る）
+    true_ones = abs(room['secret'][opp]) % 10
+    declared = room['decl1_value'][opp]
+    if declared != true_ones:
+        # 嘘を見破り → 正しい一の位公開＋直後に無料予想
+        push_log(room, f"{myname} が『嘘だ！』→ 成功。正しい一の位は {true_ones}")
+        room['decl1_resolved'][opp] = True
+        room['free_guess_pending'][pid] = True
+        # 同一ターン内で無料予想へ
+        return redirect(url_for('play', room_id=get_current_room_id()))
+    else:
+        # コール失敗 → 次ターンスキップ
+        push_log(room, f"{myname} が『嘘だ！』→ 失敗。次ターンをスキップ")
+        room['decl1_resolved'][opp] = True
+        room['skip_next_turn'][pid] = True
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
+def handle_free_guess(room, pid, guess):
+    """嘘だ！成功時の無料予想。CTは無視するが、トラップ（±1即死/±5スキップ/info）は有効。
+       ゲスフラグ（次の相手ターン限定）は発動しない。
+    """
+    opp = 2 if pid == 1 else 1
+    myname = room['pname'][pid]
+    room['free_guess_pending'][pid] = False  # フラグ消す
+
+    opponent_secret = room['secret'][opp]
+    # まずは正解優先
+    if guess == opponent_secret:
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（正解！相手は即死）")
+        room['score'][pid] += 1
+        room['winner'] = pid
+        return redirect(url_for('end_round', room_id=get_current_room_id()))
+
+    # トラップ判定
+    kill = set(room['trap_kill'][opp])
+    info = set(room['trap_info'][opp])
+
+    # ±1 即死（相手勝利）
+    if any(abs(guess - k) <= 1 for k in kill):
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（killトラップ±1命中＝即敗北）")
+        room['score'][opp] += 1
+        room['winner'] = opp
+        return redirect(url_for('end_round', room_id=get_current_room_id()))
+
+    # info発動
+    if guess in info:
+        room['pending_view'][opp] = True
+        room['view_cut_index'][opp] = len(room['actions'])
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（情報トラップ発動）")
+
+    # ±5 次ターンスキップ
+    if any(abs(guess - k) <= 5 for k in kill):
+        room['skip_next_turn'][pid] = True
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
+    # 通常ハズレ → ターン終了
+    push_log(room, f"{myname} が 無料g（予想）→ {guess}（ハズレ）")
+    switch_turn(room, pid)
+    return redirect(url_for('play', room_id=get_current_room_id()))
+
+
+# === サドン・プレス（Double or Nothing） ===
+def handle_press(room, pid, guess):
+    """サドン・プレス：ハズレ直後に同一ターンで追加の1回予想。
+    - 当たればその場で勝利
+    - 外したら次ターンスキップ
+    - トラップ（±1即死/±5スキップ/info）は有効
+    - このラウンドで1回だけ使用可能
+    """
+    opp = 2 if pid == 1 else 1
+    myname = room['pname'][pid]
+
+    # フラグ整理（ここに来ている時点で press_pending は True のはず）
+    room['press_pending'][pid] = False
+    room['press_used'][pid] = True
+
+    # 予想回数カウント
+    room['tries'][pid] += 1
+
+    opponent_secret = room['secret'][opp]
+
+    # まず正解優先
+    if guess == opponent_secret:
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（正解！相手は即死）")
+        room['score'][pid] += 1
+        room['winner'] = pid
+        return redirect(url_for('end_round', room_id=get_current_room_id()))
+
+    # トラップ判定
+    kill = set(room['trap_kill'][opp])
+    info = set(room['trap_info'][opp])
+
+    # ±1 即死（相手勝利）
+    if any(abs(guess - k) <= 1 for k in kill):
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（killトラップ±1命中＝即敗北）")
+        room['score'][opp] += 1
+        room['winner'] = opp
+        return redirect(url_for('end_round', room_id=get_current_room_id()))
+
+    # info 発動（発動時点以降の相手行動が閲覧可）
+    if guess in info:
+        room['pending_view'][opp] = True
+        room['view_cut_index'][opp] = len(room['actions'])
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（情報トラップ発動）")
+
+    # ±5 近接で次ターンスキップ
+    if any(abs(guess - k) <= 5 for k in kill):
+        room['skip_next_turn'][pid] = True
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
+    # ただのハズレ → 次ターンスキップ付与して交代
+    push_log(room, f"{myname} が プレスg（予想）→ {guess}（ハズレ）")
+    room['skip_next_turn'][pid] = True
+    switch_turn(room, pid)
+    return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_trap_info(room, pid, form):
     myname = room['pname'][pid]
@@ -1139,6 +1388,8 @@ def handle_guessflag(room, pid):
     push_log(room, f"{myname} が ゲスフラグ を立てた")
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
+
+# === 一の位宣言／嘘だ！コール／無料予想 ===
 
 def get_current_room_id():
     return session.get('room_id')
