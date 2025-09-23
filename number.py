@@ -841,6 +841,17 @@ def play(room_id):
             <label class="form-label">ヒント</label>
             { "<div class='mb-2'><label class='form-label'>種類を指定</label><select class='form-select' name='hint_type'><option>和</option><option>差</option><option>積</option></select><input type='hidden' name='confirm_choice' value='1'></div>" if choose_allowed else "<div class='small text-warning mb-2'>(このターンは種類指定不可。ランダム)</div>" }
           </div>
+          <!-- ▼ ヒントと同時に info トラップも設定（任意） -->
+          <div class="border rounded p-2 mb-2">
+            <div class="small text-warning mb-1">同時に info トラップも設定（任意）</div>
+            <input class="form-control mb-2" name="trap_info_value" type="number" placeholder="info(1)">
+            <input class="form-control mb-2" name="trap_info_value_1" type="number" placeholder="info(2)">
+            <input class="form-control mb-2" name="trap_info_value_2" type="number" placeholder="info(3)">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="info_bulk" value="1" id="hint_info_bulk">
+              <label class="form-check-label" for="hint_info_bulk">infoを3つまとめて置く（ターン消費）</label>
+            </div>
+          </div>
           <button class="btn btn-outline-light w-100" {"disabled" if room['hint_ct'][pid] > 0 else ""}>ヒントをもらう</button>
           <div class="small text-warning mt-1">{ "（ヒントはクールタイム中）" if room['hint_ct'][pid] > 0 else "" }</div>
         </form>
@@ -1060,6 +1071,73 @@ def handle_hint(room, pid, form):
     myname = room['pname'][pid]
     opp = 2 if pid == 1 else 1
 
+    # ヒントと同時に送られてきた info 入力を適用する（ターン交代はここでは行わない）
+    def _apply_info_inputs():
+        if not room['rules'].get('trap', True):
+            return
+        eff_min, eff_max = room['eff_num_min'], room['eff_num_max']
+        my_secret = room['secret'][pid]
+        max_allowed = get_info_max(room, pid)
+        free_cap = room['info_free_per_turn'][pid]
+        free_used = room['info_free_used_this_turn'][pid]
+
+        keys = ('trap_info_value','trap_info_value_1','trap_info_value_2','trap_info_val')
+        vals = []
+        for k in keys:
+            v = form.get(k)
+            if v is None or v == '':
+                continue
+            try:
+                x = int(v)
+            except:
+                continue
+            vals.append(x)
+
+        # unique
+        uniq = []
+        for x in vals:
+            if x not in uniq:
+                uniq.append(x)
+
+        bulk = form.get('info_bulk') in ('1','on','true','True')
+
+        if bulk:
+            added = []
+            for x in uniq:
+                if len(room['trap_info'][pid]) >= max_allowed:
+                    break
+                if not (eff_min <= x <= eff_max):
+                    continue
+                if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+                    continue
+                if x in room['trap_info'][pid] or x in added:
+                    continue
+                added.append(x)
+            if added:
+                room['trap_info'][pid].extend(added)
+                push_log(room, f"{room['pname'][pid]} が infoトラップをまとめて設定 → {', '.join(map(str, added))}（ヒントと同時）")
+        else:
+            remain = max(0, free_cap - free_used)
+            added = []
+            for x in uniq:
+                if remain <= 0:
+                    break
+                if len(room['trap_info'][pid]) >= max_allowed:
+                    break
+                if not (eff_min <= x <= eff_max):
+                    continue
+                if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+                    continue
+                if x in room['trap_info'][pid] or x in added:
+                    continue
+                room['trap_info'][pid].append(x)
+                added.append(x)
+                remain -= 1
+            if added:
+                room['info_free_used_this_turn'][pid] += len(added)
+                left = max(0, free_cap - room['info_free_used_this_turn'][pid])
+                push_log(room, f"{room['pname'][pid]} が infoトラップを {', '.join(map(str, added))} に設定（ヒント直前に無料で／残 {left}）")
+
     if room['hint_ct'][pid] > 0:
         push_log(room, "（ヒントはクールタイム中）")
         switch_turn(room, pid)
@@ -1070,6 +1148,7 @@ def handle_hint(room, pid, form):
 
     # ブラフ無効 → 通常ヒント
     if not room['rules'].get('bluff', True):
+        _apply_info_inputs()
         allow_choose_now = want_choose and room['hint_choice_available'][pid] and choose_type in ('和','差','積')
         if allow_choose_now:
             room['hint_choice_available'][pid] = False  # 後攻1回の指定権だけ維持
@@ -1099,6 +1178,11 @@ def handle_hint(room, pid, form):
             keep += "<input type='hidden' name='confirm_choice' value='1'>"
         if want_choose and choose_type:
             keep += f"<input type='hidden' name='hint_type' value='{choose_type}'>"
+        # info 入力も引き継ぐ
+        for k in ('trap_info_value','trap_info_value_1','trap_info_value_2','trap_info_val','info_bulk'):
+            v = form.get(k)
+            if v is not None and v != '':
+                keep += f"<input type='hidden' name='{k}' value='{v}'>"
         if has_bluff:
             fake = room['bluff'][opp]
             body = f"""
@@ -1154,6 +1238,7 @@ def handle_hint(room, pid, form):
     # 意思決定後
     if has_bluff:
         if decision == 'believe':
+            _apply_info_inputs()
             push_log(room, f"{myname} は 提示ヒント（{room['bluff'][opp]['value']}）を受け入れた")
             room['bluff'][opp] = None
             if room['hint_penalty_active'][pid]:
@@ -1161,6 +1246,7 @@ def handle_hint(room, pid, form):
             switch_turn(room, pid)
             return redirect(url_for('play', room_id=get_current_room_id()))
         else:
+            _apply_info_inputs()
             _hint_once(room, pid, chose_by_user=False, silent=False)
             _hint_once(room, pid, chose_by_user=False, silent=False)
             room['bluff'][opp] = None
@@ -1170,6 +1256,7 @@ def handle_hint(room, pid, form):
             return redirect(url_for('play', room_id=get_current_room_id()))
     else:
         if decision == 'accuse':
+            _apply_info_inputs()
             room['hint_penalty_active'][pid] = True
             push_log(room, f"{myname} は ブラフだと指摘したが外れ（以後ヒント取得後はCT1）")
             switch_turn(room, pid)
@@ -1177,6 +1264,7 @@ def handle_hint(room, pid, form):
         else:
             allow_choose_now = want_choose and room['hint_choice_available'][pid] and choose_type in ('和','差','積')
             if allow_choose_now:
+                _apply_info_inputs()
                 room['hint_choice_available'][pid] = False  # 後攻1回の指定権だけ維持
                 opp_secret = room['secret'][opp]
                 hidden = room['hidden']
@@ -1188,6 +1276,7 @@ def handle_hint(room, pid, form):
                     val = opp_secret * hidden
                 push_log(room, f"{myname} が h（ヒント取得）{choose_type}＝{val}")
             else:
+                _apply_info_inputs()
                 _hint_once(room, pid, chose_by_user=False, silent=False)
             if room['hint_penalty_active'][pid]:
                 room['hint_ct'][pid] = 1
