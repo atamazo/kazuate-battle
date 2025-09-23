@@ -154,7 +154,7 @@ def bootstrap_page(title, body_html):
               <li class="mb-2"><strong>一の位 宣言（decl1）</strong>（ON時）：ターン消費なし・各ラウンド1回。「自分の一の位(0〜9)」を宣言。嘘だ！成功で正しい一の位公開＋直後に無料予想。失敗で次ターンスキップ。<br>
                 さらに宣言者は<strong>そのラウンド中</strong>、無料infoが<strong>1ターン2個</strong>に増え、info最大数が<strong>10</strong>になります。</li>
               <li class="mb-2"><strong>サドン・プレス</strong>（ON時）：ハズレ直後に同ターンでもう1回だけ連続予想（当たれば勝利、外せば次ターンスキップ）。各ラウンド1回。</li>
-              <li class="mb-2"><strong>自分の数の変更（c）</strong>：自分のトラップ値とは重複不可。使用後は自分の<span class="value">CT2</span>、かつ相手のヒント在庫をリセット。</li>
+              <li class="mb-2"><strong>自分の数の変更（c）</strong>：自分のトラップ値とは重複不可。使用後は自分の<span class="value">CT4</span>、かつ相手のヒント在庫をリセット。</li>
             </ol>
             <p class="small text-warning">UIの表記色は明るめに統一しています。ログに表示される相手行動の詳細は、infoトラップで閲覧権が付与された場合のみ（発動時以降）表示されます。</p>
           </div>
@@ -732,13 +732,9 @@ def play(room_id):
   <div class="col-12 col-md-6">
     <form method="post" class="p-2 border rounded">
       <input type="hidden" name="action" value="t">
-      <label class="form-label">トラップ</label>
-      <select class="form-select mb-2" name="trap_kind">
-        <option value="k">kill（±1即死 / ±5次ターンスキップ）</option>
-        <option value="i">info（踏むと相手行動のフル履歴を閲覧可）</option>
-      </select>
+      <label class="form-label">トラップ（入力した項目だけ設定。選択不要）</label>
       <div class="mb-2">
-        <input class="form-control mb-2" name="trap_kill_value" type="number" placeholder="killは1つだけ（上書き）">
+        <input class="form-control mb-2" name="trap_kill_value" type="number" placeholder="killは1つだけ（上書き・ターン消費）">
         <div class="small text-warning">
         infoは通常 最大7個（宣言後は10個）。入力欄は3つ。<br>
         既定：<strong>無料で1個/ターン（宣言後は2個/ターン、ターン消費なし）</strong>。<br>
@@ -855,7 +851,7 @@ def play(room_id):
           <input type="hidden" name="action" value="c">
           <label class="form-label">自分の数を変更</label>
           <input class="form-control mb-2" name="new_secret" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
-          <button class="btn btn-outline-light w-100" {"disabled" if room['cooldown'][pid] > 0 else ""}>変更する（CT2）</button>
+          <button class="btn btn-outline-light w-100" {"disabled" if room['cooldown'][pid] > 0 else ""}>変更する（CT4）</button>
         </form>
       </div>
 
@@ -1220,7 +1216,7 @@ def handle_change(room, pid, new_secret):
         return redirect(url_for('play', room_id=get_current_room_id()))
 
     room['secret'][pid] = new_secret
-    room['cooldown'][pid] = 2
+    room['cooldown'][pid] = 4
     # 相手のヒント在庫リセット
     opp = 2 if pid == 1 else 1
     room['available_hints'][opp] = ['和','差','積']
@@ -1480,17 +1476,115 @@ def handle_trap_info(room, pid, form):
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_trap(room, pid, form):
-    """共通トラップハンドラ（UIの action='t' から来る）"""
+    """トラップ設定（選択不要）。
+    - kill 値があれば kill を設定（ターン消費）
+    - info 値があれば、
+        * チェックあり(info_bulk) → 最大3個まとめ置き（ターン消費）
+        * チェックなし           → 無料で当ターン上限まで複数追加（ターン消費なし）
+    - kill と info の同時入力も可。まとめ置きや kill が含まれている場合は最終的にターンを消費。
+    """
     if not room['rules'].get('trap', True):
         return push_and_back(room, pid, "（このルームではトラップは無効です）")
-    kind = form.get('trap_kind')
-    if kind == 'k':
-        return handle_trap_kill(room, pid, form)
-    elif kind == 'i':
-        return handle_trap_info(room, pid, form)
-    else:
-        push_log(room, "⚠ 無効なトラップ種別です。")
-        return redirect(url_for('play', room_id=get_current_room_id()))
+
+    myname = room['pname'][pid]
+    eff_min, eff_max = room['eff_num_min'], room['eff_num_max']
+    my_secret = room['secret'][pid]
+
+    turn_consumed = False
+
+    # ===== info 入力の収集 =====
+    bulk = form.get('info_bulk') in ('1', 'on', 'true', 'True')
+    info_keys = ('trap_info_value', 'trap_info_value_1', 'trap_info_value_2', 'trap_info_val')
+    info_inputs = []
+    for k in info_keys:
+        v = form.get(k)
+        if v is None or v == '':
+            continue
+        try:
+            x = int(v)
+        except Exception:
+            continue
+        info_inputs.append(x)
+
+    # 重複除去（同一送信内）
+    info_inputs_unique = []
+    for x in info_inputs:
+        if x not in info_inputs_unique:
+            info_inputs_unique.append(x)
+
+    # info 最大・無料上限
+    max_allowed = get_info_max(room, pid)
+    free_cap   = room['info_free_per_turn'][pid]
+    free_used  = room['info_free_used_this_turn'][pid]
+
+    # ===== info: まとめ置き（ターン消費） =====
+    if bulk and info_inputs_unique:
+        added_bulk = []
+        for x in info_inputs_unique:
+            if not (eff_min <= x <= eff_max):
+                continue
+            if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+                continue
+            if x in room['trap_info'][pid] or x in added_bulk:
+                continue
+            if len(room['trap_info'][pid]) >= max_allowed:
+                break
+            added_bulk.append(x)
+        if added_bulk:
+            room['trap_info'][pid].extend(added_bulk)
+            push_log(room, f"{myname} が infoトラップをまとめて設定 → {', '.join(map(str, added_bulk))}（ターン消費）")
+            turn_consumed = True
+        else:
+            push_log(room, "⚠ infoトラップの追加はありません。")
+
+    # ===== info: 無料（ターン消費なし／同一送信で上限まで複数） =====
+    if (not bulk) and info_inputs_unique:
+        remain = max(0, free_cap - free_used)
+        added_free = []
+        for x in info_inputs_unique:
+            if remain <= 0:
+                break
+            if not (eff_min <= x <= eff_max):
+                continue
+            if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+                continue
+            if x in room['trap_info'][pid] or x in added_free:
+                continue
+            if len(room['trap_info'][pid]) >= max_allowed:
+                break
+            room['trap_info'][pid].append(x)
+            added_free.append(x)
+            remain -= 1
+        if added_free:
+            room['info_free_used_this_turn'][pid] += len(added_free)
+            left = max(0, free_cap - room['info_free_used_this_turn'][pid])
+            push_log(room, f"{myname} が infoトラップを {', '.join(map(str, added_free))} に設定（ターン消費なし／このターンはあと {left} 個）")
+        else:
+            # 何も追加できなかった理由を簡潔に
+            if free_cap - free_used <= 0:
+                push_log(room, f"（このターンの無料infoは上限 {free_cap} 個に達しています）")
+            else:
+                push_log(room, "⚠ infoトラップの追加はありません。")
+
+    # ===== kill: 入力があれば処理（ターン消費） =====
+    kill_v = form.get('trap_kill_value')
+    if kill_v is not None and kill_v != '':
+        try:
+            kx = int(kill_v)
+        except Exception:
+            kx = None
+        if kx is None or not (eff_min <= kx <= eff_max) or kx == my_secret or (room['allow_negative'] and abs(kx) == abs(my_secret)):
+            push_log(room, "⚠ 無効なkillトラップ値です。")
+        else:
+            room['trap_kill'][pid].clear()
+            room['trap_kill'][pid].append(kx)
+            push_log(room, f"{myname} が killトラップを {kx} に設定")
+            turn_consumed = True
+
+    # ===== ターン遷移 =====
+    if turn_consumed:
+        switch_turn(room, pid)
+    return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_bluff(room, pid, form):
     if not room['rules'].get('bluff', True):
