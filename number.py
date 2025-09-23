@@ -109,8 +109,11 @@ def bootstrap_page(title, body_html):
     .form-control:focus, .form-select:focus { border-color:#93c5fd; box-shadow:none; }
 
     /* 明るめに統一（グレー排除） */
-    .text-muted, .small.text-muted, .form-label { color:#f9a8d4 !important; }
-    .small.text-warning, .text-warning { color:#f9a8d4 !important; }
+    .text-muted, .small.text-muted, .form-label { color:#e6f0ff !important; }  /* 明るい白〜青系 */
+    /* ルールトグルなどのチェックボックスラベルや小さな注釈を明るく */
+    .form-check-label { color:#e6f0ff !important; }
+    .small { color:#e6f0ff !important; }  /* text-warning が付いている場合は下のルールで水色に */
+    .small.text-warning, .text-warning { color:#93c5fd !important; }  /* 水色系で視認性UP */
 
     .log-box { max-height:40vh; overflow:auto; background:#0b1323; color:#e2e8f0; padding:1rem; border:1px solid #334155; border-radius:.5rem; }
     .value { color:#f9a8d4; font-weight:600; }
