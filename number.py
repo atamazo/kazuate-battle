@@ -87,8 +87,17 @@ def bootstrap_page(title, body_html):
     a, .btn-link { color:#93c5fd; }
     a:hover, .btn-link:hover { color:#bfdbfe; }
 
-    .card { background:#0f172a; border:1px solid #334155; }
-    .card-header { background:#0b1323; border-bottom:1px solid #334155; }
+    .card { background:#0f172a; border:1px solid #334155; --bs-card-cap-color:#f9a8d4; --bs-card-color:#f1f5f9; }
+    .card-header { background:#0b1323; border-bottom:1px solid #334155; color:#f9a8d4 !important; font-weight:700; }
+
+    /* Brighten all section headers/titles (card headers, modal titles) */
+    .card-header .h1, .card-header .h2, .card-header .h3,
+    .card-header .h4, .card-header .h5, .card-header .h6,
+    .card-header h1,  .card-header h2,  .card-header h3,
+    .card-header h4,  .card-header h5,  .card-header h6,
+    .card-title, .modal-title {
+      color:#f9a8d4 !important;
+    }
 
     .btn-primary { background:#2563eb; border-color:#1d4ed8; }
     .btn-primary:hover { background:#1d4ed8; border-color:#1e40af; }
@@ -139,6 +148,15 @@ def bootstrap_page(title, body_html):
           </div>
           <div class="modal-body">
             <p class="mb-2">※ ルーム作成時のトグルで<strong>各機能をON/OFF</strong>できます（ルームにより無効な場合があります）。</p>
+            <div class="p-3 rounded border border-secondary mb-3">
+              <h6 class="mb-2">基本ルール</h6>
+              <ul class="mb-0">
+                <li>各プレイヤーは自分だけが知る「秘密の数」を選びます（通常は <code>{{ NUM_MIN }}</code>〜<code>{{ NUM_MAX }}</code>。負の数ON時は±範囲）。</li>
+                <li>各ラウンドごとに誰にも知られない「隠し数」が自動で決まります（<code>{{ HIDDEN_MIN }}</code>〜<code>{{ HIDDEN_MAX }}</code>）。</li>
+                <li>ターンは基本的に交互に進み、自分のターンに「予想」「ヒント」「トラップ設置」などの行動を選びます。</li>
+                <li>相手の秘密の数を当てるとラウンド勝利。先取ポイントに到達したプレイヤーがマッチ勝利です。</li>
+              </ul>
+            </div>
             <ol class="mb-3">
               <li class="mb-2"><strong>勝利条件</strong>：相手の秘密の数字を当てるとラウンド勝利。先取ポイントに到達したプレイヤーがマッチ勝利。</li>
               <li class="mb-2"><strong>基本レンジ</strong>：選べる数は <code>{{ NUM_MIN }}</code>〜<code>{{ NUM_MAX }}</code>（負の数ON時は ±範囲）。隠し数は <code>{{ HIDDEN_MIN }}</code>〜<code>{{ HIDDEN_MAX }}</code>。</li>
@@ -169,7 +187,7 @@ def bootstrap_page(title, body_html):
   </div>
 </body>
 </html>
-""", title=title, body=body_html)
+""", title=title, body=body_html, NUM_MIN=NUM_MIN, NUM_MAX=NUM_MAX, HIDDEN_MIN=HIDDEN_MIN, HIDDEN_MAX=HIDDEN_MAX)
 
 def init_room(allow_negative: bool, target_points: int, rules=None):
     if rules is None:
@@ -234,6 +252,9 @@ def init_room(allow_negative: bool, target_points: int, rules=None):
         # === 新規：サドン・プレス（Double or Nothing） ===
         'press_used': {1: False, 2: False},     # ラウンド1回まで
         'press_pending': {1: False, 2: False},  # ハズレ直後の追撃予想待ち
+
+        # ★ 無料予想で±5に当たった直後、“同一ターンではスキップを発動させない”ための抑制フラグ
+        'skip_suppress_pid': None,
     }
 
 def room_or_404(rid):
@@ -269,8 +290,8 @@ def switch_turn(room, cur_pid):
     # ★ info：ターン交代で無料設置カウンタをリセット
     room['info_free_used_this_turn'][opp] = 0
 
-    # ★ 一の位の“ヒント指定トークン”の仕組みは廃止（今回の新効果に置換）
-    # （トークン関連のフラグ操作は削除）
+    # ★ 無料予想後に設定したスキップ抑制は、ターンが切り替わったら解除
+    room['skip_suppress_pid'] = None
 
     # ゲスフラグ未発動の失効は guessflag 有効時のみ
     if room['rules'].get('guessflag', True):
@@ -500,6 +521,9 @@ def start_new_round(room):
     # サドン・プレス
     room['press_used'] = {1: False, 2: False}
     room['press_pending'] = {1: False, 2: False}
+
+    # スキップ抑制フラグをリセット
+    room['skip_suppress_pid'] = None
     
     # 先手/後手のヒント指定可フラグ
     if room['starter'] == 1:
@@ -575,13 +599,12 @@ def play(room_id):
     if room['winner'] is not None:
         return redirect(url_for('end_round', room_id=room_id))
 
-    # スキップ処理
-    if room['skip_next_turn'][room['turn']]:
+    # スキップ処理（無料予想直後は抑制して同一ターン継続）
+    if room['skip_next_turn'][room['turn']] and room.get('skip_suppress_pid') != room['turn']:
         room['skip_next_turn'][room['turn']] = False
         push_log(room, f"{room['pname'][room['turn']]} のターンは近接トラップ効果でスキップ")
         cur = room['turn']
         switch_turn(room, cur)
-        # ターンを進めたらリダイレクトして状態を反映
         return redirect(url_for('play', room_id=room_id))
 
     # POST: アクション処理
@@ -701,7 +724,7 @@ def play(room_id):
       <label class="form-label">もう一度だけ無料で予想できます</label>
       <input class="form-control mb-2" name="free_guess" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
       <button class="btn btn-primary w-100">予想を送る</button>
-      <div class="small text-warning mt-1">※ トラップは有効（±1即死/±5スキップ/info）。ゲスフラグは発動しません。</div>
+      <div class="small text-warning mt-1">※ トラップは有効（±1即死/±5次ターンスキップ/info）。当たり/±1即死でラウンド終了を除き、予想後もあなたのターンは続きます。ゲスフラグは発動しません。</div>
     </form>
   </div>
 </div>
@@ -828,7 +851,7 @@ def play(room_id):
         <form method="post" class="p-2 border rounded">
           <input type="hidden" name="action" value="g">
           <label class="form-label">相手の数字を予想</label>
-          <input class="form-control mb-2" name="guess" type="number" required placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
+          <input class="form-control mb-2" name="guess" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
           <button class="btn btn-primary w-100" {"disabled" if room['guess_ct'][pid] > 0 else ""}>予想する</button>
           <div class="small text-warning mt-1">{ "（予想はクールタイム中）" if room['guess_ct'][pid] > 0 else "" }</div>
         </form>
@@ -1269,7 +1292,13 @@ def handle_decl1(room, pid, form):
     room['info_free_per_turn'][pid] = 2   # 無料info/ターン → 2個
     room['info_max'][pid] = 10            # 最大所持数 → 10個
 
-    push_log(room, f"{myname} が 一の位を宣言（このラウンド中、無料infoは1ターンに2個・最大10個まで）")
+    # ログ（自分用の一般ログ）
+    push_log(room, f"{myname} が 一の位を {d} と宣言（このラウンド中、無料infoは1ターンに2個・最大10個まで）")
+
+    # ★ 相手への通知（相手の名前で始めることで、相手側のログに必ず見える）
+    opp = 2 if pid == 1 else 1
+    push_log(room, f"{room['pname'][opp]} への通知: {myname} が秘密の数字の一の位が {d} であると宣言した")
+
     # ターン消費なし
     return redirect(url_for('play', room_id=get_current_room_id()))
 
@@ -1334,16 +1363,16 @@ def handle_free_guess(room, pid, guess):
         room['view_cut_index'][opp] = len(room['actions'])
         push_log(room, f"{myname} が 無料g（予想）→ {guess}（情報トラップ発動）")
 
-    # ±5 次ターンスキップ
+    # ±5 次ターンスキップ（ただし “いまの同一ターンでは”スキップさせない）
     if any(abs(guess - k) <= 5 for k in kill):
         room['skip_next_turn'][pid] = True
+        room['skip_suppress_pid'] = pid  # ← 同一ターンではスキップしない
         push_log(room, f"{myname} が 無料g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
-        switch_turn(room, pid)
+        # ターンは維持（自分のターンが続く）
         return redirect(url_for('play', room_id=get_current_room_id()))
 
-    # 通常ハズレ → ターン終了
+    # 通常ハズレ → ターン維持（自分のターンが続く）
     push_log(room, f"{myname} が 無料g（予想）→ {guess}（ハズレ）")
-    switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 
