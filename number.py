@@ -172,7 +172,7 @@ def bootstrap_page(title, body_html):
               <li class="mb-2"><strong>一の位 宣言（decl1）</strong>（ON時）：ターン消費なし・各ラウンド1回。「自分の一の位(0〜9)」を宣言。嘘だ！成功で正しい一の位公開＋直後に無料予想。失敗で次ターンスキップ。<br>
                 さらに宣言者は<strong>そのラウンド中</strong>、無料infoが<strong>1ターン2個</strong>に増え、info最大数が<strong>10</strong>になります。</li>
               <li class="mb-2"><strong>サドン・プレス</strong>（ON時）：ハズレ直後に同ターンでもう1回だけ連続予想（当たれば勝利、外せば次ターンスキップ）。各ラウンド1回。</li>
-              <li class="mb-2"><strong>自分の数の変更（c）</strong>：自分のトラップ値とは重複不可。使用後は自分の<span class="value">CT4</span>、かつ相手のヒント在庫をリセット。</li>
+              <li class="mb-2"><strong>自分の数の変更（c）</strong>：自分のトラップ値とは重複不可。各ラウンド<strong>2回まで</strong>。使用後は自分の<span class="value">CT7</span>、かつ相手のヒント在庫をリセット。</li>
             </ol>
             <p class="small text-warning">UIの表記色は明るめに統一しています。ログに表示される相手行動の詳細は、infoトラップで閲覧権が付与された場合のみ（発動時以降）表示されます。</p>
           </div>
@@ -214,6 +214,7 @@ def init_room(allow_negative: bool, target_points: int, rules=None):
         'available_hints': {1: ['和','差','積'], 2: ['和','差','積']},
         'hint_choice_available': {1: False, 2: True},  # 毎ラウンド後攻のみ可（ベースルール）
         'cooldown': {1:0, 2:0},  # c のCT（自分の番カウント）
+        'change_used': {1:0, 2:0},  # ★ このラウンドで c を使った回数（各2回まで）
         'trap_kill': {1: [], 2: []}, # ±1即死, ±5次ターンスキップ
         'trap_info': {1: [], 2: []}, # 踏むと相手が次ターン以降ログ閲覧可
         'pending_view': {1: False, 2: False},
@@ -499,6 +500,7 @@ def start_new_round(room):
     room['info_free_per_turn'] = {1: 1, 2: 1}
     room['info_free_used_this_turn'] = {1: 0, 2: 0}
     room['cooldown'] = {1: 0, 2: 0}
+    room['change_used'] = {1: 0, 2: 0}  # ★ ラウンドごとの c 使用回数リセット
     room['available_hints'] = {1: ['和','差','積'], 2: ['和','差','積']}
     room['bluff'] = {1: None, 2: None}
     room['hint_penalty_active'] = {1: False, 2: False}
@@ -662,6 +664,9 @@ def play(room_id):
                     return push_and_back(room, pid, "⚠ サドン・プレスの値が不正です。")
                 return handle_press(room, pid, press_val)
 
+            elif action == 'press_skip':
+                return handle_press_skip(room, pid)
+
             elif action == 'free_guess':
                 fg_val = get_int(request.form, 'free_guess',
                                  default=None,
@@ -682,7 +687,7 @@ def play(room_id):
     opp   = 2 if pid == 1 else 1
     oppname = room['pname'][opp]
 
-    c_available = (room['cooldown'][pid] == 0)
+    change_used = room.get('change_used', {}).get(pid, 0)  # ★ ラウンド内 c 使用回数
     hint_available = True  # 表示上は在庫非表示にする（内部在庫は維持）
 
     # ゲスフラグ失効の警告（自分のターン開始時に一度だけ表示）
@@ -732,19 +737,24 @@ def play(room_id):
         # サドン・プレス（有効時のみ）
         elif room['press_pending'][pid] and ru.get('press', True):
             my_turn_block = f"""
-<div class="card mb-3">
-  <div class="card-header">サドン・プレス（Double or Nothing）</div>
-  <div class="card-body">
-    <form method="post" class="p-2 border rounded">
-      <input type="hidden" name="action" value="press">
-      <label class="form-label">さっきのハズレ直後に、もう一回だけ連続で予想できます</label>
-      <input class="form-control mb-2" name="press_guess" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
-      <button class="btn btn-primary w-100">もう一回だけ予想！</button>
-      <div class="small text-warning mt-1">※ 当たれば勝利。外すと次ターンスキップ（このラウンド1回まで）。</div>
-    </form>
-  </div>
-</div>
-"""
+        <div class="card mb-3">
+        <div class="card-header">サドン・プレス（Double or Nothing）</div>
+        <div class="card-body">
+            <form method="post" class="p-2 border rounded mb-2">
+            <input type="hidden" name="action" value="press">
+            <label class="form-label">さっきのハズレ直後に、もう一回だけ連続で予想できます</label>
+            <input class="form-control mb-2" name="press_guess" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
+            <button class="btn btn-primary w-100">もう一回だけ予想！</button>
+            <div class="small text-warning mt-1">※ 当たれば勝利。外すと次ターンスキップ（このラウンド1回まで）。</div>
+            </form>
+            <form method="post" class="p-2 border rounded">
+            <input type="hidden" name="action" value="press_skip">
+            <label class="form-label">今回はサドン・プレスを使わない</label>
+            <button class="btn btn-outline-light w-100">使わないで交代する</button>
+            </form>
+        </div>
+        </div>
+        """
         else:
             # ★ 宣言の“ヒント指定トークン”を廃止 → 先攻/後攻の既存フラグのみ
             choose_allowed = room['hint_choice_available'][pid]
@@ -874,7 +884,13 @@ def play(room_id):
           <input type="hidden" name="action" value="c">
           <label class="form-label">自分の数を変更</label>
           <input class="form-control mb-2" name="new_secret" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
-          <button class="btn btn-outline-light w-100" {"disabled" if room['cooldown'][pid] > 0 else ""}>変更する（CT4）</button>
+          <button class="btn btn-outline-light w-100" {"disabled" if (room['cooldown'][pid] > 0 or change_used >= 2) else ""}>
+            変更する（CT7・ラウンド2回まで）
+          </button>
+          <div class="small text-warning mt-1">
+            このラウンドの使用回数：<span class="value">{change_used}</span>/2
+            { " ／（クールタイム中）" if room['cooldown'][pid] > 0 else "" }
+          </div>
         </form>
       </div>
 
@@ -1237,9 +1253,14 @@ def handle_change(room, pid, new_secret):
         push_log(room, "⚠ 範囲外の数字です。")
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
+    if room.get('change_used', {}).get(pid, 0) >= 2:
+        push_log(room, "（このラウンドでの自分の数の変更は2回までです）")
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
 
     room['secret'][pid] = new_secret
-    room['cooldown'][pid] = 4
+    room['cooldown'][pid] = 7
+    room['change_used'][pid] = room.get('change_used', {}).get(pid, 0) + 1
     # 相手のヒント在庫リセット
     opp = 2 if pid == 1 else 1
     room['available_hints'][opp] = ['和','差','積']
@@ -1386,6 +1407,9 @@ def handle_press(room, pid, guess):
     - トラップ（±1即死/±5スキップ/info）は有効
     - このラウンドで1回だけ使用可能
     """
+    # 権利チェック：ハズレ直後で press_pending が立っているときだけ有効
+    if not room['press_pending'][pid]:
+        return push_and_back(room, pid, "（サドン・プレスの機会はありません）")
     opp = 2 if pid == 1 else 1
     myname = room['pname'][pid]
 
@@ -1434,7 +1458,18 @@ def handle_press(room, pid, guess):
     room['skip_next_turn'][pid] = True
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
-
+def handle_press_skip(room, pid):
+    if not room['rules'].get('press', True):
+        return push_and_back(room, pid, "（このルームではサドン・プレスは無効です）")
+    # サドン・プレス権を放棄して通常の交代に移る
+    if not room['press_pending'][pid]:
+        return push_and_back(room, pid, "（サドン・プレスの機会はありません）")
+    room['press_pending'][pid] = False
+    push_log(room, f"{room['pname'][pid]} は サドン・プレスを使用しなかった")
+    if room['hint_penalty_active'][pid]:
+        room['hint_ct'][pid] = 1
+    switch_turn(room, pid)
+    return redirect(url_for('play', room_id=get_current_room_id()))
 def handle_trap_info(room, pid, form):
     if not room['rules'].get('trap', True):
         return push_and_back(room, pid, "（このルームではトラップは無効です）")
