@@ -1261,10 +1261,26 @@ def handle_change(room, pid, new_secret):
     room['secret'][pid] = new_secret
     room['cooldown'][pid] = 7
     room['change_used'][pid] = room.get('change_used', {}).get(pid, 0) + 1
+
+    # --- 宣言効果のリセット（自分の数を変更したら無効化） ---
+    # ・「一の位の宣言」をリセット（再宣言可能に）
+    room['decl1_value'][pid] = None
+    room['decl1_resolved'][pid] = True
+    room['decl1_used'][pid] = False
+    # ・無料info上限を 1/ターン に戻し、最大所持数を 7 に戻す
+    room['info_free_per_turn'][pid] = 1
+    room['info_max'][pid] = INFO_MAX_DEFAULT
+    # ・同一ターン中に既に無料infoを2個使っていた場合などに備え、上限に丸める
+    room['info_free_used_this_turn'][pid] = min(
+        room['info_free_used_this_turn'][pid], room['info_free_per_turn'][pid]
+    )
+
     # 相手のヒント在庫リセット
     opp = 2 if pid == 1 else 1
     room['available_hints'][opp] = ['和','差','積']
+
     push_log(room, f"{myname} が c（自分の数を変更）→ {new_secret}")
+    push_log(room, f"（宣言効果リセット：無料info/ターン=1、上限={INFO_MAX_DEFAULT}。再宣言可）")
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
