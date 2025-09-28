@@ -1025,27 +1025,27 @@ def play(room_id):
 </div>
 
 <script>
-(function(){ 
+(function(){{ 
   // Auto-reload when the other player finishes a turn (poll every 1.2s)
   const mypid = {pid};
   let lastSerial = {room['turn_serial']};
-  async function check(){ 
-    try{ 
-      const r = await fetch("{url_for('poll', room_id=room_id)}", {cache:"no-store"});
+  async function check(){{ 
+    try{{ 
+      const r = await fetch("{url_for('poll', room_id=room_id)}", {{cache:"no-store"}});
       const j = await r.json();
-      if(j.phase !== "play" || j.winner !== null){ 
+      if(j.phase !== "play" || j.winner !== null){{ 
         location.reload();
         return;
-      }
-      if(j.serial !== lastSerial && (j.turn === mypid)){ 
+      }}
+      if(j.serial !== lastSerial && (j.turn === mypid)){{ 
         location.reload();
         return;
-      }
+      }}
       lastSerial = j.serial;
-    }catch(e){}
-  }
+    }}catch(e){{}}
+  }}
   setInterval(check, 1200);
-})();
+}})();
 </script>
 """
     return bootstrap_page(f"対戦 - {myname}", body)
