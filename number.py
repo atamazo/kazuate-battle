@@ -4,7 +4,6 @@ import random, string, os
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "imigawakaranai")
-# 本番(https)でセッションが安定するようクッキー設定
 app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=True
@@ -15,23 +14,19 @@ NUM_MIN = 1
 NUM_MAX = 50
 HIDDEN_MIN = 1
 HIDDEN_MAX = 30
-
-# 最大数のデフォルト（プレイヤーごとに上書きできるように）
 INFO_MAX_DEFAULT = 7
 
-# ルール既定値（ロール/YesNo/献身 もトグル可能）
 RULE_DEFAULTS = {
-    'trap': True,       # kill/info トラップ
-    'bluff': True,      # ブラフヒント
-    'guessflag': True,  # ゲスフラグ
-    'decl1': True,      # 一の位の宣言＆嘘だ！コール
-    'press': True,      # サドン・プレス（Double or Nothing）
-    'roles': True,      # ロール（各ラウンドでランダム配布、非公開）
-    'yn': True,         # Yes/No 質問
-    'devotion': True,   # 二重職：献身（ラウンド中のみ）
+    'trap': True,
+    'bluff': True,
+    'guessflag': True,
+    'decl1': True,
+    'press': True,
+    'roles': True,
+    'yn': True,
+    'devotion': True,
 }
 
-# 役職一覧（キー名は内部名、labelは表示）
 ROLES = {
     'Scholar':  '学者',
     'Guardian': '番人',
@@ -44,15 +39,10 @@ ROLES = {
 def role_label(code):
     return ROLES.get(code, '—')
 
-# ====== ルーム状態 ======
-rooms = {}  # room_id -> dict(state)
+rooms = {}
 
 # ====== ちょい演出ヘルパ ======
 def fx_markup(key, shout=None):
-    """
-    ログ行の末尾に仕込むマーカー。クライアント側で音/トースト/シェイクを発火。
-    例) push_log(room, "正解！" + fx_markup('guess_hit','一撃必殺！'))
-    """
     attr = f" data-sfx='{key}'"
     if shout:
         attr += f" data-shout='{shout}'"
@@ -60,20 +50,11 @@ def fx_markup(key, shout=None):
 
 # ====== ユーティリティ ======
 def get_info_max(room, pid):
-    """
-    最終的な info 最大数を返す:
-      - 基本は room['info_max'][pid]（通常7、宣言後10）
-      - 罠師で +3
-      - 献身でのペナルティがあれば -2
-      - 合算上限は 13（宣言10 + 罠師3）
-    """
     base = room.get('info_max', {}).get(pid, INFO_MAX_DEFAULT)
     extra = 0
     if has_role(room, pid, 'Trapper'):
         extra += 3
-    # 献身ペナ
     extra -= room.get('devotion_info_penalty', {}).get(pid, 0)
-    # 上限は 13
     return max(1, min(base + extra, 13))
 
 def get_int(form, key, default=None, min_v=None, max_v=None):
@@ -125,8 +106,6 @@ def bootstrap_page(title, body_html):
     a:hover, .btn-link:hover { color:#bfdbfe; }
     .card { background:#0f172a; border:1px solid #334155; --bs-card-cap-color:#f9a8d4; --bs-card-color:#f1f5f9; }
     .card-header { background:#0b1323; border-bottom:1px solid #334155; color:#f9a8d4 !important; font-weight:700; }
-    .card-header .h1, .card-header .h2, .card-header .h3,
-    .card-header h1, .card-header h2, .card-header h3, .card-title, .modal-title { color:#f9a8d4 !important; }
     .btn-primary { background:#2563eb; border-color:#1d4ed8; }
     .btn-primary:hover { background:#1d4ed8; border-color:#1e40af; }
     .btn-outline-light { color:#f1f5f9; border-color:#94a3b8; }
@@ -143,7 +122,6 @@ def bootstrap_page(title, body_html):
     .log-box { max-height:40vh; overflow:auto; background:#0b1323; color:#e2e8f0; padding:1rem; border:1px solid #334155; border-radius:.5rem; }
     .value { color:#f9a8d4; font-weight:600; }
 
-    /* --- fun SFX/FX --- */
     .fx{display:none;}
     @keyframes shake {
       10%, 90% { transform: translate3d(-1px, 0, 0); }
@@ -198,9 +176,10 @@ def bootstrap_page(title, body_html):
               <li class="mb-2"><strong>ヒント</strong>：和/差/積から1つが得られます。後攻のみ各ラウンド1回、種類の指定が可能。<br>※<em>学者</em>ならラウンド中ずっと種類指定可＆ヒントCT無効。</li>
               <li class="mb-2"><strong>トラップ</strong>（ON時）：
                 <ul>
-                  <li><strong>kill</strong>：±1命中で即死、±5命中で次ターンスキップ（設置はターン消費／上書き1個）。</li>
+                  <li><strong>kill</strong>：<u>基本</u>は±1で即死、±5で次ターンスキップ（設置はターン消費／上書き1個）。<br>
+                    ※<em>罠師</em>が設置した <strong>kill</strong> は<strong>±2で即死、±6で次ターンスキップ</strong>に強化。</li>
                   <li><strong>info</strong>：踏まれると、<em>その時点以降</em>の相手の行動履歴を閲覧可能。通常は同時最大7個・1ターンに無料1個設置（ターン消費なし）。チェックすると3個まとめて（ターン消費）。<br>
-                    ※<em>罠師</em>で最大+3（宣言と重なると最大13）。※<em>解除士</em>は相手ターン開始時に1個自動解除（各ラウンド1回）。</li>
+                    ※<em>罠師</em>で最大+3（宣言と重なると最大13）。※<em>解除士</em>は自分のターン開始時、<strong>2ターンに1つ</strong>相手のinfoをランダム解除（CD2）。</li>
                 </ul>
               </li>
               <li class="mb-2"><strong>ブラフヒント</strong>（ON時）：次回ヒントに偽の値を提示。「信じる／ブラフだ！」を選択。指摘成功で本物ヒント×2、失敗で以後ヒント取得時にCT1（<em>詐欺師</em>相手ならCT2）。<br>
@@ -208,14 +187,15 @@ def bootstrap_page(title, body_html):
               <li class="mb-2"><strong>ゲスフラグ</strong>（ON時）：自分ターンに設置（各ラウンド1回）。次の相手ターンで相手が予想したら即死。</li>
               <li class="mb-2"><strong>一の位 宣言（decl1）</strong>（ON時）：ターン消費なし・各ラウンド1回。「自分の一の位」を宣言。嘘だ！成功で正しい一の位公開＋直後に無料予想。失敗で次ターンスキップ。<br>
                 宣言者は<strong>ラウンド中ずっと</strong>、無料infoが<strong>1ターン2個</strong>に、info最大数が<strong>10</strong>に。</li>
-              <li class="mb-2"><strong>サドン・プレス</strong>（ON時）：ハズレ直後に同ターンでもう1回だけ連続予想（当たれば勝利、外せば次ターンスキップ）。各ラウンド1回。</li>
+              <li class="mb-2"><strong>サドン・プレス</strong>（ON時）：ハズレ直後に同ターンでもう1回だけ連続予想（当たれば勝利、外せば次ターンスキップ）。各ラウンド1回。<br>
+                「使わない」を選ぶと<strong>相手のターンに移行</strong>。</li>
               <li class="mb-2"><strong>自分の数の変更（c）</strong>：自分のトラップ値とは重複不可。各ラウンド<strong>2回まで</strong>。使用後は自分の<span class="value">CT7</span>、かつ相手のヒント在庫をリセット。</li>
               <li class="mb-2"><strong>ロール（ON時）</strong>：各ラウンド開始時にランダム配布（自分だけ確認可）。
                 <ul>
                   <li><em>学者</em>：ラウンド中ずっとヒント種類指定可＆ヒントCT無効。</li>
                   <li><em>番人</em>：自分の「次ターンスキップ」を1度だけ自動無効化（原因は何でもOK）。</li>
-                  <li><em>罠師</em>：info最大 +3（宣言と重なると13上限）。</li>
-                  <li><em>解除士</em>：各ラウンド1回、自分のターン開始時に相手のinfoをランダムで1つ解除。</li>
+                  <li><em>罠師</em>：info最大 +3。さらに自分の<strong>kill</strong>は<strong>±2即死／±6スキップ</strong>に変更。</li>
+                  <li><em>解除士</em>：自分のターン開始時、<strong>2ターンに1回</strong> 相手のinfoをランダム解除（CD2）。</li>
                   <li><em>詐欺師</em>：相手がブラフ指摘に失敗するとヒントCT2。さらに相手が得た本物ヒントは表示値に±1のノイズ。</li>
                   <li><em>分析屋</em>：Yes/No質問がクールタイム2、ラウンド3回まで（同一ターン連打は不可）。</li>
                 </ul>
@@ -236,7 +216,6 @@ def bootstrap_page(title, body_html):
     <!-- === SFX / FX helpers === -->
     <div id="sfx-toast" class="toast-bubble"></div>
     <script>
-      // 効果音のパス（/static/sfx に置いてください）
       const SFX = {
         guess_hit:   "/static/sfx/hit.mp3",
         kill_dead:   "/static/sfx/dead.mp3",
@@ -256,11 +235,7 @@ def bootstrap_page(title, body_html):
       function playSfx(key, vol=0.55){
         const src = SFX[key];
         if(!src) return;
-        try{
-          const a = new Audio(src);
-          a.volume = vol;
-          a.play().catch(()=>{});
-        }catch(e){}
+        try{ const a = new Audio(src); a.volume = vol; a.play().catch(()=>{}); }catch(e){}
       }
 
       function toast(msg){
@@ -271,21 +246,14 @@ def bootstrap_page(title, body_html):
         setTimeout(()=> el.classList.remove("show"), 950);
       }
 
-      function screenShake(){
-        document.body.classList.add("screen-shake");
-        setTimeout(()=>document.body.classList.remove("screen-shake"), 380);
-      }
+      function screenShake(){ document.body.classList.add("screen-shake"); setTimeout(()=>document.body.classList.remove("screen-shake"), 380); }
 
-      // 直近ログの .fx マーカーを拾って音/演出を発火
-      (function fireFXFromLog(){
+      (function(){
         const last = document.querySelector(".log-box ol li:last-child .fx");
         if(!last) return;
         const key = last.dataset.sfx;
         const shout = last.dataset.shout;
-        if (key) {
-          playSfx(key);
-          if (["guess_hit","kill_dead","flag_boom"].includes(key)) screenShake();
-        }
+        if (key) { playSfx(key); if (["guess_hit","kill_dead","flag_boom"].includes(key)) screenShake(); }
         if (shout) toast(shout);
       })();
     </script>
@@ -317,9 +285,9 @@ def init_room(allow_negative: bool, target_points: int, rules=None):
         'hidden': None,
         'tries': {1:0, 2:0},
         'available_hints': {1: ['和','差','積'], 2: ['和','差','積']},
-        'hint_choice_available': {1: False, 2: True},  # ベース：後攻のみ1回指定可
-        'cooldown': {1:0, 2:0},     # c のCT（自分の番カウント）
-        'change_used': {1:0, 2:0},  # ラウンドで c を使った回数（各2回）
+        'hint_choice_available': {1: False, 2: True},
+        'cooldown': {1:0, 2:0},
+        'change_used': {1:0, 2:0},
         'trap_kill': {1: [], 2: []},
         'trap_info': {1: [], 2: []},
         'pending_view': {1: False, 2: False},
@@ -336,7 +304,6 @@ def init_room(allow_negative: bool, target_points: int, rules=None):
         'starter': 1,
         'rules': rules,
 
-        # 既存：ブラフ/ゲスフラグ/プレス/宣言
         'bluff': {1: None, 2: None},
         'hint_penalty_active': {1: False, 2: False},
         'hint_ct': {1: 0, 2: 0},
@@ -350,31 +317,29 @@ def init_room(allow_negative: bool, target_points: int, rules=None):
         'decl1_value': {1: None, 2: None},
         'decl1_used': {1: False, 2: False},
         'decl1_resolved': {1: True, 2: True},
-        'decl1_hint_token_ready': {1: False, 2: False},   # 廃用（互換）
-        'decl1_hint_token_active': {1: False, 2: False},  # 廃用（互換）
+        'decl1_hint_token_ready': {1: False, 2: False},
+        'decl1_hint_token_active': {1: False, 2: False},
         'free_guess_pending': {1: False, 2: False},
 
         'press_used': {1: False, 2: False},
         'press_pending': {1: False, 2: False},
 
-        # ロール関連
-        'role_main': {1: None, 2: None},      # 毎ラウンドで配布（非公開）
-        'role_extra': {1: None, 2: None},     # 献身で追加取得（ラウンド中のみ）
+        'role_main': {1: None, 2: None},
+        'role_extra': {1: None, 2: None},
         'guardian_shield_used': {1: False, 2: False},
-        'disarm_used': {1: False, 2: False},
+        # 解除士：CD（自分のターン基準）。0=即発動可、>0 は減算して待機
+        'disarm_cd': {1: 0, 2: 0},
 
-        # Yes/No
         'yn_used_count': {1:0, 2:0},
         'yn_ct': {1:0, 2:0},
-        'yn_last_tick': {1:-999, 2:-999},   # 同じターン内連打防止用
-        # 献身
+        'yn_last_tick': {1:-999, 2:-999},
+
         'devotion_used': {1: False, 2: False},
         'devotion_offers': {1: None, 2: None},
         'devotion_info_penalty': {1: 0, 2: 0},
 
-        # 自動進行ポーリング
-        'turn_serial': 0,  # switch_turn() とラウンド終了時にインクリメント
-        'tick': 0,         # ターンインデックス
+        'turn_serial': 0,
+        'tick': 0,
     }
 
 def room_or_404(rid):
@@ -402,16 +367,14 @@ def assign_roles(room):
         room['role_main'] = {1: None, 2: None}
         room['role_extra'] = {1: None, 2: None}
         return
-    # 役職は重複可（2人とも同じになっても良い）・毎ラウンドランダム
     keys = list(ROLES.keys())
     room['role_main'][1] = random.choice(keys)
     room['role_main'][2] = random.choice(keys)
     room['role_extra'] = {1: None, 2: None}
     room['guardian_shield_used'] = {1: False, 2: False}
-    room['disarm_used'] = {1: False, 2: False}
+    room['disarm_cd'] = {1: 0, 2: 0}  # ラウンド頭でCDリセット
 
 def set_skip(room, pid):
-    """スキップ付与時に番人で1度だけ無効化。"""
     if has_role(room, pid, 'Guardian') and not room['guardian_shield_used'][pid]:
         room['guardian_shield_used'][pid] = True
         push_log(room, f"{room['pname'][pid]} の番人効果により『次ターンスキップ』は無効化された（このラウンド1回）")
@@ -419,7 +382,6 @@ def set_skip(room, pid):
     room['skip_next_turn'][pid] = True
 
 def _apply_trickster_noise(room, hint_owner_pid, value):
-    """相手が詐欺師なら、本物ヒント値に ±1 ノイズを付与して返す。"""
     opp = 2 if hint_owner_pid == 1 else 1
     if has_role(room, opp, 'Trickster'):
         delta = random.choice([-1, 1])
@@ -427,7 +389,6 @@ def _apply_trickster_noise(room, hint_owner_pid, value):
     return value
 
 def switch_turn(room, cur_pid):
-    # CTを減らす
     for p in (1,2):
         if room['cooldown'][p] > 0: room['cooldown'][p] -= 1
         if room['hint_ct'][p] > 0: room['hint_ct'][p] -= 1
@@ -435,25 +396,18 @@ def switch_turn(room, cur_pid):
         if room['guess_flag_ct'][p] > 0: room['guess_flag_ct'][p] -= 1
         if room['yn_ct'][p] > 0: room['yn_ct'][p] -= 1
 
-    # infoトラップの閲覧反映
     opp_prev = 2 if cur_pid == 1 else 1
     if room['pending_view'][opp_prev]:
         room['can_view'][opp_prev] = True
         room['pending_view'][opp_prev] = False
 
-    # ターン交代
     next_pid = opp_prev
     room['turn'] = next_pid
     room['tick'] += 1
     room['turn_serial'] += 1
-
-    # 無料infoのカウンタリセット
     room['info_free_used_this_turn'][next_pid] = 0
-
-    # 無料予想後のスキップ抑制は、ターン切替で解除
     room['skip_suppress_pid'] = None
 
-    # ゲスフラグ未発動の失効
     if room['rules'].get('guessflag', True):
         gf_owner = next_pid
         prev = cur_pid
@@ -461,14 +415,18 @@ def switch_turn(room, cur_pid):
             room['guess_flag_armed'][gf_owner] = False
             room['guess_flag_warn'][prev] = True
 
-    # 解除士：自分のターン開始時に1回だけ相手のinfoを解除
-    if has_role(room, next_pid, 'Disarmer') and not room['disarm_used'][next_pid]:
+    # 解除士：自分のターン開始時、2ターンに1回ランダム解除（CD2）
+    if has_role(room, next_pid, 'Disarmer'):
         opp = 2 if next_pid == 1 else 1
-        if room['trap_info'][opp]:
-            idx = random.randrange(len(room['trap_info'][opp]))
-            removed = room['trap_info'][opp].pop(idx)
-            room['disarm_used'][next_pid] = True
-            push_log(room, f"{room['pname'][next_pid]} の解除士が相手のinfo({removed})を解除した（このラウンド1回）")
+        cd = room['disarm_cd'][next_pid]
+        if cd > 0:
+            room['disarm_cd'][next_pid] = cd - 1
+        else:
+            if room['trap_info'][opp]:
+                idx = random.randrange(len(room['trap_info'][opp]))
+                removed = room['trap_info'][opp].pop(idx)
+                room['disarm_cd'][next_pid] = 2  # 次の自分のターン2回は待機
+                push_log(room, f"{room['pname'][next_pid]} の解除士が相手のinfo({removed})を解除した（CD2）")
 
 # ====== ルーティング ======
 @app.route('/')
@@ -671,20 +629,17 @@ def start_new_round(room):
     room['press_used'] = {1: False, 2: False}
     room['press_pending'] = {1: False, 2: False}
 
-    # ロール初期化
     assign_roles(room)
     room['devotion_used'] = {1: False, 2: False}
     room['devotion_offers'] = {1: None, 2: None}
     room['devotion_info_penalty'] = {1: 0, 2: 0}
     room['guardian_shield_used'] = {1: False, 2: False}
-    room['disarm_used'] = {1: False, 2: False}
+    room['disarm_cd'] = {1: 0, 2: 0}
 
-    # Yes/No 初期化
     room['yn_used_count'] = {1:0, 2:0}
     room['yn_ct'] = {1:0, 2:0}
     room['yn_last_tick'] = {1:-999, 2:-999}
 
-    # 先手/後手
     if room['starter'] == 1:
         room['hint_choice_available'] = {1: False, 2: True}
         room['turn'] = 1
@@ -700,7 +655,6 @@ def start_new_round(room):
 
 @app.route('/poll/<room_id>')
 def poll(room_id):
-    """クライアント用：ターン自動進行検知"""
     room = room_or_404(room_id)
     return jsonify({
         'turn': room['turn'],
@@ -708,6 +662,12 @@ def poll(room_id):
         'winner': room['winner'],
         'phase': room['phase'],
     })
+
+# ===== kill 閾値（罠師なら±2/±6、通常±1/±5） =====
+def _kill_thresholds(room, trap_owner_pid):
+    if has_role(room, trap_owner_pid, 'Trapper'):
+        return 2, 6
+    return 1, 5
 
 @app.route('/play/<room_id>', methods=['GET','POST'])
 def play(room_id):
@@ -755,7 +715,6 @@ def play(room_id):
     if room['winner'] is not None:
         return redirect(url_for('end_round', room_id=room_id))
 
-    # スキップ処理（無料予想直後は抑制して同一ターン継続）
     if room['skip_next_turn'][room['turn']] and room.get('skip_suppress_pid') != room['turn']:
         room['skip_next_turn'][room['turn']] = False
         push_log(room, f"{room['pname'][room['turn']]} のターンは近接トラップ効果でスキップ" + fx_markup('kill_near','ヒヤッ！'))
@@ -763,7 +722,6 @@ def play(room_id):
         switch_turn(room, cur)
         return redirect(url_for('play', room_id=room_id))
 
-    # POSTアクション
     if request.method == 'POST':
         if room['turn'] != pid:
             return redirect(url_for('play', room_id=room_id))
@@ -837,19 +795,16 @@ def play(room_id):
             app.logger.exception("POST処理中の例外")
             return redirect(url_for('index'))
 
-    # 表示用
     p1, p2 = room['pname'][1], room['pname'][2]
     myname = room['pname'][pid]
     opp   = 2 if pid == 1 else 1
     oppname = room['pname'][opp]
 
-    # ゲスフラグ失効の警告（自分のターン開始時に一度だけ表示）
     if request.method == 'GET' and room['turn'] == pid and room.get('guess_flag_warn', {}).get(pid):
         other = 2 if pid == 1 else 1
         push_log(room, f"{room['pname'][pid]} への通知: 実は前のターンに {room['pname'][other]} がゲスフラグを立てていた。危なかった！" + fx_markup('ping'))
         room['guess_flag_warn'][pid] = False
 
-    # ログ（info可視範囲適用）
     filtered = []
     cut = room['view_cut_index'][pid]
     for idx, entry in enumerate(room['actions']):
@@ -861,7 +816,6 @@ def play(room_id):
             filtered.append(entry); continue
     log_html = "".join(f"<li>{e}</li>" for e in filtered)
 
-    # 自分の番フォーム
     my_turn_block = ""
     ru = room['rules']
     if room['turn'] == pid:
@@ -873,7 +827,7 @@ def play(room_id):
   <label class="form-label">もう一度だけ無料で予想できます</label>
   <input class="form-control mb-2" name="free_guess" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
   <button class="btn btn-primary w-100">予想を送る</button>
-  <div class="small text-warning mt-1">※ トラップは有効。±1即死/±5スキップ/info。ゲスフラグは発動しません。</div>
+  <div class="small text-warning mt-1">※ トラップは有効。±1/±5（罠師なら±2/±6）。ゲスフラグは発動しません。</div>
 </form></div></div>
 """
         elif room['press_pending'][pid] and ru.get('press', True):
@@ -893,16 +847,12 @@ def play(room_id):
 </div></div>
 """
         else:
-            # ヒント種類指定可：学者なら常時、そうでないなら既存フラグ
             choose_allowed = has_role(room, pid, 'Scholar') or room['hint_choice_available'][pid]
-            # Yes/No の残回数/CT
             yn_left = 3 if has_role(room, pid, 'Analyst') else 1
             yn_left -= room['yn_used_count'][pid]
             yn_ct = room['yn_ct'][pid]
-            # Devotion 可否
             devotion_ok = ru.get('devotion', True) and ru.get('roles', True) and (not room['devotion_used'][pid])
 
-            # トラップUI
             trap_block = ""
             if ru.get('trap', True):
                 trap_block = f"""
@@ -1068,7 +1018,6 @@ def play(room_id):
 </div>
 """
 
-    # 右側パネル
     my_role = role_label(room['role_main'][pid]) if room['rules'].get('roles', True) else '—'
     extra_role = role_label(room['role_extra'][pid]) if room['rules'].get('roles', True) else '—'
     body = f"""
@@ -1111,7 +1060,6 @@ def play(room_id):
 
 <script>
 (function(){{
-  // 相手がターン消費したら自動で更新：/poll を1.2秒ごとにチェック
   const mypid = {pid};
   let lastSerial = {room['turn_serial']};
   async function check(){{ 
@@ -1119,12 +1067,10 @@ def play(room_id):
       const r = await fetch("{url_for('poll', room_id=room_id)}", {{cache:"no-store"}});
       const j = await r.json();
       if(j.phase !== "play" || j.winner !== null){{ 
-        location.reload();
-        return;
+        location.reload(); return;
       }}
       if(j.serial !== lastSerial && (j.turn === mypid)){{ 
-        location.reload();
-        return;
+        location.reload(); return;
       }}
       lastSerial = j.serial;
     }}catch(e){{}}
@@ -1174,7 +1120,6 @@ def end_round(room_id):
 
 <script>
 (function(){{ 
-  // 勝利音＆紙吹雪（playSfxに依存せず単独で動く）
   try{{ new Audio("/static/sfx/win.mp3").play().catch(()=>{{}}); }}catch(_){{
   }}
   const c = document.createElement('canvas');
@@ -1225,13 +1170,11 @@ def finish_match(room_id):
 
 # ====== アクション処理 ======
 def _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None):
-    """ヒントを1回実行しログを残す（在庫からランダム消費 or 指定）。"""
     opp = 2 if pid == 1 else 1
     opp_secret = room['secret'][opp]
     hidden = room['hidden']
     if chosen_type in ('和','差','積'):
         htype = chosen_type
-        # 学者でなくても、ここに渡ってきたら在庫から消費する（在庫枯渇時は消費なし）
         stock = room['available_hints'][pid]
         if htype in stock:
             stock.remove(htype)
@@ -1250,7 +1193,6 @@ def _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None):
     else:
         val = opp_secret * hidden
 
-    # トリックスターのノイズ（相手が詐欺師のとき、本物ヒントに±1）
     shown = _apply_trickster_noise(room, pid, val)
 
     if not silent:
@@ -1270,7 +1212,6 @@ def handle_guess(room, pid, guess):
 
     room['tries'][pid] += 1
 
-    # ゲスフラグ
     if room['rules'].get('guessflag', True) and room['guess_flag_armed'][opp]:
         room['guess_flag_armed'][opp] = False
         push_log(room, f"（{room['pname'][opp]} のゲスフラグが発動！{room['pname'][pid]} は即死）" + fx_markup('flag_boom','ゲスフラ炸裂！'))
@@ -1286,11 +1227,12 @@ def handle_guess(room, pid, guess):
         room['turn_serial'] += 1
         return redirect(url_for('end_round', room_id=get_current_room_id()))
 
-    kill = set(room['trap_kill'][opp]) if room['rules'].get('trap', True) else set()
+    kill_vals = set(room['trap_kill'][opp]) if room['rules'].get('trap', True) else set()
     info = set(room['trap_info'][opp]) if room['rules'].get('trap', True) else set()
+    inst_t, near_t = _kill_thresholds(room, opp)
 
-    if any(abs(guess - k) <= 1 for k in kill):
-        push_log(room, f"{myname} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
+    if any(abs(guess - k) <= inst_t for k in kill_vals):
+        push_log(room, f"{myname} が g（予想）→ {guess}（killトラップ±{inst_t}命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
@@ -1301,9 +1243,9 @@ def handle_guess(room, pid, guess):
         room['view_cut_index'][opp] = len(room['actions'])
         push_log(room, f"{myname} が g（予想）→ {guess}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
 
-    if any(abs(guess - k) <= 5 for k in kill):
+    if any(abs(guess - k) <= near_t for k in kill_vals):
         set_skip(room, pid)
-        push_log(room, f"{myname} が g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
+        push_log(room, f"{myname} が g（予想）→ {guess}（kill近接±{near_t}命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         if room['guess_penalty_active'][pid]:
             room['guess_ct'][pid] = 1
         switch_turn(room, pid)
@@ -1332,25 +1274,21 @@ def handle_hint(room, pid, form):
     want_choose = bool(form.get('confirm_choice'))
     choose_type = form.get('hint_type')
 
-    # スカラーなら常時種類指定可
     if has_role(room, pid, 'Scholar'):
         want_choose = True
         if choose_type not in ('和','差','積'):
             choose_type = random.choice(['和','差','積'])
 
-    # ブラフ無効 → 通常ヒント
     if not room['rules'].get('bluff', True):
         allow_choose_now = want_choose and (has_role(room, pid, 'Scholar') or room['hint_choice_available'][pid]) and choose_type in ('和','差','積')
         if allow_choose_now and not has_role(room, pid, 'Scholar'):
             room['hint_choice_available'][pid] = False
         _hint_once(room, pid, chose_by_user=allow_choose_now, silent=False, chosen_type=choose_type if allow_choose_now else None)
-        # ヒントCT：通常は発動。学者はCT無効
         if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
             room['hint_ct'][pid] = 1
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
 
-    # ブラフ有効：必ず確認（ダイアログ）
     decision = form.get('bluff_decision')
     has_bluff_flag = bool(room['bluff'][opp])
 
@@ -1394,7 +1332,6 @@ def handle_hint(room, pid, form):
 """
         return bootstrap_page("ヒント確認", body)
 
-    # 意思決定後
     if has_bluff_flag:
         if decision == 'believe':
             push_log(room, f"{myname} は 提示ヒント（{room['bluff'][opp]['value']}）を受け入れた")
@@ -1404,7 +1341,6 @@ def handle_hint(room, pid, form):
             switch_turn(room, pid)
             return redirect(url_for('play', room_id=get_current_room_id()))
         else:
-            # 見破り：演出ログ＋本物ヒント×2（トリックスターのノイズ適用）
             push_log(room, f"{myname} は ブラフだ！と指摘 → 見破った！本物ヒント×2" + fx_markup('bluff_ok','見抜いた！'))
             _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None)
             _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None)
@@ -1416,7 +1352,6 @@ def handle_hint(room, pid, form):
     else:
         if decision == 'accuse':
             room['hint_penalty_active'][pid] = True
-            # 詐欺師相手ならCT2
             if has_role(room, opp, 'Trickster'):
                 room['hint_ct'][pid] = 2
                 push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT2）" + fx_markup('bluff_ng','ぐぬぬ…'))
@@ -1459,7 +1394,6 @@ def handle_change(room, pid, new_secret):
     room['cooldown'][pid] = 7
     room['change_used'][pid] += 1
 
-    # 宣言効果リセット
     room['decl1_value'][pid] = None
     room['decl1_resolved'][pid] = True
     room['decl1_used'][pid] = False
@@ -1467,7 +1401,6 @@ def handle_change(room, pid, new_secret):
     room['info_max'][pid] = INFO_MAX_DEFAULT
     room['info_free_used_this_turn'][pid] = min(room['info_free_used_this_turn'][pid], room['info_free_per_turn'][pid])
 
-    # 相手のヒント在庫リセット
     opp = 2 if pid == 1 else 1
     room['available_hints'][opp] = ['和','差','積']
 
@@ -1586,7 +1519,6 @@ def handle_trap(room, pid, form):
 
     turn_consumed = False
 
-    # info 入力
     bulk = form.get('info_bulk') in ('1', 'on', 'true', 'True')
     info_keys = ('trap_info_value', 'trap_info_value_1', 'trap_info_value_2', 'trap_info_val')
     info_inputs = []
@@ -1748,6 +1680,8 @@ def handle_free_guess(room, pid, guess):
     myname = room['pname'][pid]
     room['free_guess_pending'][pid] = False
     opponent_secret = room['secret'][opp]
+    inst_t, near_t = _kill_thresholds(room, opp)
+
     if guess == opponent_secret:
         push_log(room, f"{myname} が 無料g（予想）→ {guess}（正解！相手は即死）" + fx_markup('guess_hit','一撃必殺！'))
         room['score'][pid] += 1
@@ -1758,8 +1692,8 @@ def handle_free_guess(room, pid, guess):
     kill = set(room['trap_kill'][opp])
     info = set(room['trap_info'][opp])
 
-    if any(abs(guess - k) <= 1 for k in kill):
-        push_log(room, f"{myname} が 無料g（予想）→ {guess}（killトラップ±1命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
+    if any(abs(guess - k) <= inst_t for k in kill):
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（killトラップ±{inst_t}命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
@@ -1770,10 +1704,10 @@ def handle_free_guess(room, pid, guess):
         room['view_cut_index'][opp] = len(room['actions'])
         push_log(room, f"{myname} が 無料g（予想）→ {guess}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
 
-    if any(abs(guess - k) <= 5 for k in kill):
+    if any(abs(guess - k) <= near_t for k in kill):
         set_skip(room, pid)
         room['skip_suppress_pid'] = pid
-        push_log(room, f"{myname} が 無料g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（kill近接±{near_t}命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         return redirect(url_for('play', room_id=get_current_room_id()))
 
     push_log(room, f"{myname} が 無料g（予想）→ {guess}（ハズレ）")
@@ -1790,6 +1724,8 @@ def handle_press(room, pid, guess):
     room['press_used'][pid] = True
     room['tries'][pid] += 1
     opponent_secret = room['secret'][opp]
+    inst_t, near_t = _kill_thresholds(room, opp)
+
     if guess == opponent_secret:
         push_log(room, f"{myname} が プレスg（予想）→ {guess}（正解！相手は即死）" + fx_markup('guess_hit','一撃必殺！'))
         room['score'][pid] += 1
@@ -1798,8 +1734,8 @@ def handle_press(room, pid, guess):
         return redirect(url_for('end_round', room_id=get_current_room_id()))
     kill = set(room['trap_kill'][opp])
     info = set(room['trap_info'][opp])
-    if any(abs(guess - k) <= 1 for k in kill):
-        push_log(room, f"{myname} が プレスg（予想）→ {guess}（killトラップ±1命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
+    if any(abs(guess - k) <= inst_t for k in kill):
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（killトラップ±{inst_t}命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
@@ -1808,9 +1744,9 @@ def handle_press(room, pid, guess):
         room['pending_view'][opp] = True
         room['view_cut_index'][opp] = len(room['actions'])
         push_log(room, f"{myname} が プレスg（予想）→ {guess}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
-    if any(abs(guess - k) <= 5 for k in kill):
+    if any(abs(guess - k) <= near_t for k in kill):
         set_skip(room, pid)
-        push_log(room, f"{myname} が プレスg（予想）→ {guess}（kill近接±5命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（kill近接±{near_t}命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
     push_log(room, f"{myname} が プレスg（予想）→ {guess}（ハズレ）" + fx_markup('press_miss','やっちまった！'))
@@ -1827,14 +1763,13 @@ def handle_press_skip(room, pid):
     push_log(room, f"{room['pname'][pid]} は サドン・プレスを使用しなかった")
     if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
         room['hint_ct'][pid] = 1
+    # ←ここで相手のターンに移行
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
-# ===== Yes/No =====
 def handle_yn(room, pid, form):
     if not room['rules'].get('yn', True):
         return push_and_back(room, pid, "（このルームではYes/Noは無効です）")
-    # ラウンド使用回数とCT
     limit = 3 if has_role(room, pid, 'Analyst') else 1
     if room['yn_used_count'][pid] >= limit:
         push_log(room, "（このラウンドのYes/No使用上限です）")
@@ -1842,7 +1777,6 @@ def handle_yn(room, pid, form):
     if room['yn_ct'][pid] > 0:
         push_log(room, "（Yes/NoはCT中）")
         return redirect(url_for('play', room_id=get_current_room_id()))
-    # 同じターン内連打禁止
     if room['yn_last_tick'][pid] == room['tick']:
         push_log(room, "（同じターン内では複数回のYes/Noは使えません）")
         return redirect(url_for('play', room_id=get_current_room_id()))
@@ -1873,17 +1807,15 @@ def handle_yn(room, pid, form):
     room['yn_used_count'][pid] += 1
     room['yn_last_tick'][pid] = room['tick']
     if has_role(room, pid, 'Analyst'):
-        room['yn_ct'][pid] = 2  # CT2
+        room['yn_ct'][pid] = 2
     push_log(room, f"{room['pname'][pid]} が Yes/No：{desc} → <b>{'Yes' if ans else 'No'}</b>（ターンは消費しない）" + fx_markup('ping'))
     return redirect(url_for('play', room_id=get_current_room_id()))
 
-# ===== 献身 =====
 def handle_devotion_offer(room, pid):
     if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
         return push_and_back(room, pid, "（このルームでは献身は無効です）")
     if room['devotion_used'][pid]:
         return push_and_back(room, pid, "（このラウンドは既に献身済みです）")
-    # 候補3：自分のメイン/取得済み以外から
     pool = [k for k in ROLES.keys() if k != room['role_main'][pid] and k != room['role_extra'][pid]]
     if len(pool) < 3:
         pool = list(ROLES.keys())
@@ -1891,7 +1823,6 @@ def handle_devotion_offer(room, pid):
     room['devotion_offers'][pid] = offers
     names = [role_label(o) for o in offers]
     push_log(room, f"{room['pname'][pid]} が 献身の候補を開いた（{', '.join(names)}）")
-    # UIを表示
     opts = "".join([f"""
     <form method='post' class='d-inline me-2'>
       <input type='hidden' name='action' value='devotion_pick'>
@@ -1919,19 +1850,15 @@ def handle_devotion_pick(room, pid, pick):
     room['role_extra'][pid] = pick
     room['devotion_used'][pid] = True
     room['devotion_info_penalty'][pid] = 2
-    # 代償
     room['guess_ct'][pid] = max(room['guess_ct'][pid], 1)
     room['hint_ct'][pid] = max(room['hint_ct'][pid], 1)
     push_log(room, f"{room['pname'][pid]} は 献身で『{role_label(pick)}』を得た（今ターン終了／g&hにCT1／info上限-2）")
-    # 今ターン終了
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
-# === 補助 ===
 def get_current_room_id():
     return session.get('room_id')
 
-# ====== エラーハンドラ ======
 @app.errorhandler(404)
 def on_404(e):
     return bootstrap_page("404", f"""
@@ -1953,7 +1880,5 @@ def on_500(e):
 <a class="btn btn-primary" href="{url_for('index')}">ホームへ</a>
 """), 500
 
-# ====== 起動 ======
 if __name__ == '__main__':
-    # ローカル開発用（Render では gunicorn number:app を使用）
     app.run(host='0.0.0.0', port=5000, debug=True)
