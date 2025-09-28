@@ -48,6 +48,35 @@ def role_label(code):
 rooms = {}  # room_id -> dict(state)
 
 # ====== ユーティリティ ======
+
+# 現在のリクエストから room_id をできる限り安全に推定する
+def get_current_room_id():
+    """
+    現在のリクエストから room_id をできる限り安全に推定する。
+    優先順位: セッション -> ルート引数 -> パスに含まれる既存ルームID -> None
+    """
+    # 1) セッション
+    rid = session.get('room_id')
+    if rid in rooms:
+        return rid
+    # 2) ルート引数
+    try:
+        if request.view_args and 'room_id' in request.view_args:
+            rid = request.view_args.get('room_id')
+            if rid in rooms:
+                return rid
+    except Exception:
+        pass
+    # 3) パスに含まれる既知のルームID
+    try:
+        path = request.path or ''
+        for _rid in rooms.keys():
+            if f'/{_rid}' in path:
+                return _rid
+    except Exception:
+        pass
+    # 4) 見つからない
+    return None
 def get_info_max(room, pid):
     """
     最終的な info 最大数を返す:
@@ -83,6 +112,18 @@ def push_and_back(room, pid, msg, to_play=True):
     if msg:
         push_log(room, msg)
     rid = get_current_room_id()
+    if rid is None:
+        # room 参照から逆引き（最終手段）
+        try:
+            for k, v in rooms.items():
+                if v is room:
+                    rid = k
+                    break
+        except Exception:
+            rid = None
+    if rid is None:
+        # それでも取得できなければホームへ
+        return redirect(url_for('index'))
     if to_play:
         return redirect(url_for('play', room_id=rid))
     else:
@@ -755,8 +796,11 @@ def play(room_id):
                 return push_and_back(room, pid, "⚠ 不明なアクションです。")
 
         except Exception:
-            app.logger.exception("POST処理中の例外")
-            return redirect(url_for('index'))
+            app.logger.exception("POST処理中の例外", exc_info=True)
+            rid = session.get('room_id') or room_id or get_current_room_id()
+            if rid is None:
+                return redirect(url_for('index'))
+            return redirect(url_for('play', room_id=rid))
 
     # 表示用
     p1, p2 = room['pname'][1], room['pname'][2]
