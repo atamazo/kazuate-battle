@@ -47,6 +47,17 @@ def role_label(code):
 # ====== ルーム状態 ======
 rooms = {}  # room_id -> dict(state)
 
+# ====== ちょい演出ヘルパ ======
+def fx_markup(key, shout=None):
+    """
+    ログ行の末尾に仕込むマーカー。クライアント側で音/トースト/シェイクを発火。
+    例) push_log(room, "正解！" + fx_markup('guess_hit','一撃必殺！'))
+    """
+    attr = f" data-sfx='{key}'"
+    if shout:
+        attr += f" data-shout='{shout}'"
+    return f"<span class='fx'{attr}></span>"
+
 # ====== ユーティリティ ======
 def get_info_max(room, pid):
     """
@@ -131,6 +142,23 @@ def bootstrap_page(title, body_html):
     .small.text-warning, .text-warning { color:#93c5fd !important; }
     .log-box { max-height:40vh; overflow:auto; background:#0b1323; color:#e2e8f0; padding:1rem; border:1px solid #334155; border-radius:.5rem; }
     .value { color:#f9a8d4; font-weight:600; }
+
+    /* --- fun SFX/FX --- */
+    .fx{display:none;}
+    @keyframes shake {
+      10%, 90% { transform: translate3d(-1px, 0, 0); }
+      20%, 80% { transform: translate3d(2px, 0, 0); }
+      30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+      40%, 60% { transform: translate3d(4px, 0, 0); }
+    }
+    .screen-shake { animation: shake .35s linear both; }
+    .toast-bubble {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      background:#f9a8d4; color:#0b1220; padding:.5rem .75rem; border-radius:.75rem;
+      font-weight:700; z-index: 2000; box-shadow:0 6px 20px rgba(0,0,0,.35);
+      opacity:0; pointer-events:none; transition: opacity .15s, transform .25s;
+    }
+    .toast-bubble.show { opacity:1; transform: translate(-50%, 0); }
   </style>
 </head>
 <body>
@@ -204,6 +232,63 @@ def bootstrap_page(title, body_html):
       </div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- === SFX / FX helpers === -->
+    <div id="sfx-toast" class="toast-bubble"></div>
+    <script>
+      // 効果音のパス（/static/sfx に置いてください）
+      const SFX = {
+        guess_hit:   "/static/sfx/hit.mp3",
+        kill_dead:   "/static/sfx/dead.mp3",
+        kill_near:   "/static/sfx/near.mp3",
+        info:        "/static/sfx/info.mp3",
+        bluff_ok:    "/static/sfx/bluff_ok.mp3",
+        bluff_ng:    "/static/sfx/bluff_ng.mp3",
+        flag_boom:   "/static/sfx/boom.mp3",
+        press_ready: "/static/sfx/press_ready.mp3",
+        press_miss:  "/static/sfx/press_miss.mp3",
+        decl:        "/static/sfx/decl.mp3",
+        win:         "/static/sfx/win.mp3",
+        ping:        "/static/sfx/ping.mp3",
+        change:      "/static/sfx/change.mp3",
+      };
+
+      function playSfx(key, vol=0.55){
+        const src = SFX[key];
+        if(!src) return;
+        try{
+          const a = new Audio(src);
+          a.volume = vol;
+          a.play().catch(()=>{});
+        }catch(e){}
+      }
+
+      function toast(msg){
+        if(!msg) return;
+        const el = document.getElementById("sfx-toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        setTimeout(()=> el.classList.remove("show"), 950);
+      }
+
+      function screenShake(){
+        document.body.classList.add("screen-shake");
+        setTimeout(()=>document.body.classList.remove("screen-shake"), 380);
+      }
+
+      // 直近ログの .fx マーカーを拾って音/演出を発火
+      (function fireFXFromLog(){
+        const last = document.querySelector(".log-box ol li:last-child .fx");
+        if(!last) return;
+        const key = last.dataset.sfx;
+        const shout = last.dataset.shout;
+        if (key) {
+          playSfx(key);
+          if (["guess_hit","kill_dead","flag_boom"].includes(key)) screenShake();
+        }
+        if (shout) toast(shout);
+      })();
+    </script>
   </div>
 </body>
 </html>
@@ -673,7 +758,7 @@ def play(room_id):
     # スキップ処理（無料予想直後は抑制して同一ターン継続）
     if room['skip_next_turn'][room['turn']] and room.get('skip_suppress_pid') != room['turn']:
         room['skip_next_turn'][room['turn']] = False
-        push_log(room, f"{room['pname'][room['turn']]} のターンは近接トラップ効果でスキップ")
+        push_log(room, f"{room['pname'][room['turn']]} のターンは近接トラップ効果でスキップ" + fx_markup('kill_near','ヒヤッ！'))
         cur = room['turn']
         switch_turn(room, cur)
         return redirect(url_for('play', room_id=room_id))
@@ -761,7 +846,7 @@ def play(room_id):
     # ゲスフラグ失効の警告（自分のターン開始時に一度だけ表示）
     if request.method == 'GET' and room['turn'] == pid and room.get('guess_flag_warn', {}).get(pid):
         other = 2 if pid == 1 else 1
-        push_log(room, f"{room['pname'][pid]} への通知: 実は前のターンに {room['pname'][other]} がゲスフラグを立てていた。危なかった！")
+        push_log(room, f"{room['pname'][pid]} への通知: 実は前のターンに {room['pname'][other]} がゲスフラグを立てていた。危なかった！" + fx_markup('ping'))
         room['guess_flag_warn'][pid] = False
 
     # ログ（info可視範囲適用）
@@ -1023,37 +1108,32 @@ def play(room_id):
     </div>
   </div>
 </div>
-"""
-    # --- ここから：自動更新JS（f-stringに入れずJinjaで埋め込む） ---
-    poll_js = render_template_string("""
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-  // 相手がターン消費したら自動で更新：/poll を1.2秒ごとにチェック
-  const mypid = {{ mypid }};
-  let lastSerial = {{ serial }};
-  const POLL_URL = "{{ poll_url }}";
-  function check(){
-    fetch(POLL_URL, {cache:"no-store"})
-      .then(r => r.json())
-      .then(j => {
-        if (j.phase !== "play" || j.winner !== null) {
-          window.location.reload();
-          return;
-        }
-        if (j.serial !== lastSerial && (j.turn === mypid)) {
-          window.location.reload();
-          return;
-        }
-        lastSerial = j.serial;
-      })
-      .catch(() => {});
-  }
-  setInterval(check, 1200);
-});
-</script>
-""", mypid=pid, serial=room['turn_serial'], poll_url=url_for('poll', room_id=room_id))
 
-    return bootstrap_page(f"対戦 - {myname}", body + poll_js)
+<script>
+(function(){{
+  // 相手がターン消費したら自動で更新：/poll を1.2秒ごとにチェック
+  const mypid = {pid};
+  let lastSerial = {room['turn_serial']};
+  async function check(){{ 
+    try{{ 
+      const r = await fetch("{url_for('poll', room_id=room_id)}", {{cache:"no-store"}});
+      const j = await r.json();
+      if(j.phase !== "play" || j.winner !== null){{ 
+        location.reload();
+        return;
+      }}
+      if(j.serial !== lastSerial && (j.turn === mypid)){{ 
+        location.reload();
+        return;
+      }}
+      lastSerial = j.serial;
+    }}catch(e){{}}
+  }}
+  setInterval(check, 1200);
+}})();
+</script>
+"""
+    return bootstrap_page(f"対戦 - {myname}", body)
 
 @app.get('/end/<room_id>')
 def end_round(room_id):
@@ -1091,6 +1171,34 @@ def end_round(room_id):
     <div class="log-box"><ol class="mb-0">{log_html_full}</ol></div>
   </div>
 </div>
+
+<script>
+(function(){{ 
+  // 勝利音＆紙吹雪（playSfxに依存せず単独で動く）
+  try{{ new Audio("/static/sfx/win.mp3").play().catch(()=>{{}}); }}catch(_){{
+  }}
+  const c = document.createElement('canvas');
+  Object.assign(c.style, {{position:'fixed', inset:0, zIndex:1500, pointerEvents:'none'}});
+  document.body.appendChild(c);
+  const ctx = c.getContext('2d'); let W,H; const rs=[]; const N=80;
+  function resize(){{ W= c.width = innerWidth; H= c.height = innerHeight; }}
+  addEventListener('resize', resize); resize();
+  for(let i=0;i<N;i++){{ rs.push({{x:Math.random()*W, y:-20-Math.random()*H, v:1+Math.random()*3, s:4+Math.random()*6, r:Math.random()*6}}); }}
+  let t=0, id=0;
+  (function loop(){{ 
+    ctx.clearRect(0,0,W,H);
+    for(const p of rs){{ 
+      p.y += p.v; p.x += Math.sin((t+p.y)/30); p.r += 0.05;
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.r);
+      ctx.fillStyle=`hsl(${{(p.y/3+t)%360}},90%,60%)`;
+      ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s);
+      ctx.restore();
+    }}
+    t++; id=requestAnimationFrame(loop);
+    if(t>180){{ cancelAnimationFrame(id); c.remove(); }}
+  }})();
+}})();
+</script>
 """
     return bootstrap_page("ラウンド結果", body)
 
@@ -1165,14 +1273,14 @@ def handle_guess(room, pid, guess):
     # ゲスフラグ
     if room['rules'].get('guessflag', True) and room['guess_flag_armed'][opp]:
         room['guess_flag_armed'][opp] = False
-        push_log(room, f"（{room['pname'][opp]} のゲスフラグが発動！{room['pname'][pid]} は即死）")
+        push_log(room, f"（{room['pname'][opp]} のゲスフラグが発動！{room['pname'][pid]} は即死）" + fx_markup('flag_boom','ゲスフラ炸裂！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
         return redirect(url_for('end_round', room_id=get_current_room_id()))
 
     if guess == opponent_secret:
-        push_log(room, f"{myname} が g（予想）→ {guess}（正解！相手は即死）")
+        push_log(room, f"{myname} が g（予想）→ {guess}（正解！相手は即死）" + fx_markup('guess_hit','一撃必殺！'))
         room['score'][pid] += 1
         room['winner'] = pid
         room['turn_serial'] += 1
@@ -1182,7 +1290,7 @@ def handle_guess(room, pid, guess):
     info = set(room['trap_info'][opp]) if room['rules'].get('trap', True) else set()
 
     if any(abs(guess - k) <= 1 for k in kill):
-        push_log(room, f"{myname} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）")
+        push_log(room, f"{myname} が g（予想）→ {guess}（killトラップ±1命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
@@ -1191,11 +1299,11 @@ def handle_guess(room, pid, guess):
     if guess in info:
         room['pending_view'][opp] = True
         room['view_cut_index'][opp] = len(room['actions'])
-        push_log(room, f"{myname} が g（予想）→ {guess}（情報トラップ発動）")
+        push_log(room, f"{myname} が g（予想）→ {guess}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
 
     if any(abs(guess - k) <= 5 for k in kill):
         set_skip(room, pid)
-        push_log(room, f"{myname} が g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
+        push_log(room, f"{myname} が g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         if room['guess_penalty_active'][pid]:
             room['guess_ct'][pid] = 1
         switch_turn(room, pid)
@@ -1203,6 +1311,7 @@ def handle_guess(room, pid, guess):
 
     push_log(room, f"{myname} が g（予想）→ {guess}（ハズレ）")
     if room['rules'].get('press', True) and (not room['press_used'][pid]) and (not room['press_pending'][pid]):
+        push_log(room, "（サドン・プレスのチャンス！）" + fx_markup('press_ready','もう一回いく？'))
         room['press_pending'][pid] = True
         return redirect(url_for('play', room_id=get_current_room_id()))
 
@@ -1295,7 +1404,8 @@ def handle_hint(room, pid, form):
             switch_turn(room, pid)
             return redirect(url_for('play', room_id=get_current_room_id()))
         else:
-            # 本物ヒント×2（トリックスターのノイズ適用）
+            # 見破り：演出ログ＋本物ヒント×2（トリックスターのノイズ適用）
+            push_log(room, f"{myname} は ブラフだ！と指摘 → 見破った！本物ヒント×2" + fx_markup('bluff_ok','見抜いた！'))
             _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None)
             _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None)
             room['bluff'][opp] = None
@@ -1309,10 +1419,10 @@ def handle_hint(room, pid, form):
             # 詐欺師相手ならCT2
             if has_role(room, opp, 'Trickster'):
                 room['hint_ct'][pid] = 2
-                push_log(room, f"{myname} は ブラフだと指摘したが外れ（以後ヒント取得後はCT2）")
+                push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT2）" + fx_markup('bluff_ng','ぐぬぬ…'))
             else:
                 room['hint_ct'][pid] = 1
-                push_log(room, f"{myname} は ブラフだと指摘したが外れ（以後ヒント取得後はCT1）")
+                push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT1）" + fx_markup('bluff_ng','ぐぬぬ…'))
             switch_turn(room, pid)
             return redirect(url_for('play', room_id=get_current_room_id()))
         else:
@@ -1361,7 +1471,7 @@ def handle_change(room, pid, new_secret):
     opp = 2 if pid == 1 else 1
     room['available_hints'][opp] = ['和','差','積']
 
-    push_log(room, f"{myname} が c（自分の数を変更）→ {new_secret}")
+    push_log(room, f"{myname} が c（自分の数を変更）→ {new_secret}" + fx_markup('change','入れ替え！'))
     push_log(room, f"（宣言効果リセット：無料info/ターン=1、上限={INFO_MAX_DEFAULT}。再宣言可）")
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
@@ -1589,7 +1699,7 @@ def handle_guessflag(room, pid):
         return redirect(url_for('play', room_id=get_current_room_id()))
     room['guess_flag_armed'][pid] = True
     room['guess_flag_used'][pid] = True
-    push_log(room, f"{myname} が ゲスフラグ を立てた")
+    push_log(room, f"{myname} が ゲスフラグ を立てた" + fx_markup('ping'))
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
 
@@ -1607,7 +1717,7 @@ def handle_decl1(room, pid, form):
     room['decl1_resolved'][pid] = False
     room['info_free_per_turn'][pid] = 2
     room['info_max'][pid] = 10
-    push_log(room, f"{myname} が 一の位を {d} と宣言（このラウンド中、無料infoは1ターン2個・最大10個）")
+    push_log(room, f"{myname} が 一の位を {d} と宣言（このラウンド中、無料infoは1ターン2個・最大10個）" + fx_markup('decl','宣言ッ！'))
     opp = 2 if pid == 1 else 1
     push_log(room, f"{room['pname'][opp]} への通知: {myname} が秘密の数字の一の位が {d} であると宣言した")
     return redirect(url_for('play', room_id=get_current_room_id()))
@@ -1639,7 +1749,7 @@ def handle_free_guess(room, pid, guess):
     room['free_guess_pending'][pid] = False
     opponent_secret = room['secret'][opp]
     if guess == opponent_secret:
-        push_log(room, f"{myname} が 無料g（予想）→ {guess}（正解！相手は即死）")
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（正解！相手は即死）" + fx_markup('guess_hit','一撃必殺！'))
         room['score'][pid] += 1
         room['winner'] = pid
         room['turn_serial'] += 1
@@ -1649,7 +1759,7 @@ def handle_free_guess(room, pid, guess):
     info = set(room['trap_info'][opp])
 
     if any(abs(guess - k) <= 1 for k in kill):
-        push_log(room, f"{myname} が 無料g（予想）→ {guess}（killトラップ±1命中＝即敗北）")
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（killトラップ±1命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
@@ -1658,12 +1768,12 @@ def handle_free_guess(room, pid, guess):
     if guess in info:
         room['pending_view'][opp] = True
         room['view_cut_index'][opp] = len(room['actions'])
-        push_log(room, f"{myname} が 無料g（予想）→ {guess}（情報トラップ発動）")
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
 
     if any(abs(guess - k) <= 5 for k in kill):
         set_skip(room, pid)
         room['skip_suppress_pid'] = pid
-        push_log(room, f"{myname} が 無料g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
+        push_log(room, f"{myname} が 無料g（予想）→ {guess}（kill近接±5命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         return redirect(url_for('play', room_id=get_current_room_id()))
 
     push_log(room, f"{myname} が 無料g（予想）→ {guess}（ハズレ）")
@@ -1681,7 +1791,7 @@ def handle_press(room, pid, guess):
     room['tries'][pid] += 1
     opponent_secret = room['secret'][opp]
     if guess == opponent_secret:
-        push_log(room, f"{myname} が プレスg（予想）→ {guess}（正解！相手は即死）")
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（正解！相手は即死）" + fx_markup('guess_hit','一撃必殺！'))
         room['score'][pid] += 1
         room['winner'] = pid
         room['turn_serial'] += 1
@@ -1689,7 +1799,7 @@ def handle_press(room, pid, guess):
     kill = set(room['trap_kill'][opp])
     info = set(room['trap_info'][opp])
     if any(abs(guess - k) <= 1 for k in kill):
-        push_log(room, f"{myname} が プレスg（予想）→ {guess}（killトラップ±1命中＝即敗北）")
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（killトラップ±1命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
@@ -1697,13 +1807,13 @@ def handle_press(room, pid, guess):
     if guess in info:
         room['pending_view'][opp] = True
         room['view_cut_index'][opp] = len(room['actions'])
-        push_log(room, f"{myname} が プレスg（予想）→ {guess}（情報トラップ発動）")
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
     if any(abs(guess - k) <= 5 for k in kill):
         set_skip(room, pid)
-        push_log(room, f"{myname} が プレスg（予想）→ {guess}（kill近接±5命中：次ターンスキップ）")
+        push_log(room, f"{myname} が プレスg（予想）→ {guess}（kill近接±5命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
-    push_log(room, f"{myname} が プレスg（予想）→ {guess}（ハズレ）")
+    push_log(room, f"{myname} が プレスg（予想）→ {guess}（ハズレ）" + fx_markup('press_miss','やっちまった！'))
     set_skip(room, pid)
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
@@ -1760,14 +1870,11 @@ def handle_yn(room, pid, form):
         push_log(room, "⚠ Yes/Noの入力が不正です。")
         return redirect(url_for('play', room_id=get_current_room_id()))
 
-    # 奇数/偶数は禁止（UIに出していないが保険）
-    # （descに "偶数" 等のキーワードが混入しない前提。念のためチェックは省略）
-
     room['yn_used_count'][pid] += 1
     room['yn_last_tick'][pid] = room['tick']
     if has_role(room, pid, 'Analyst'):
         room['yn_ct'][pid] = 2  # CT2
-    push_log(room, f"{room['pname'][pid]} が Yes/No：{desc} → <b>{'Yes' if ans else 'No'}</b>（ターンは消費しない）")
+    push_log(room, f"{room['pname'][pid]} が Yes/No：{desc} → <b>{'Yes' if ans else 'No'}</b>（ターンは消費しない）" + fx_markup('ping'))
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 # ===== 献身 =====
@@ -1848,4 +1955,5 @@ def on_500(e):
 
 # ====== 起動 ======
 if __name__ == '__main__':
+    # ローカル開発用（Render では gunicorn number:app を使用）
     app.run(host='0.0.0.0', port=5000, debug=True)
