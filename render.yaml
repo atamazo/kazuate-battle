@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: yamayama
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: SECRET_KEY
+        sync: false   # Renderのダッシュボードで値を入れる
+    healthCheckPath: /health
