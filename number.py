@@ -1023,32 +1023,37 @@ def play(room_id):
     </div>
   </div>
 </div>
-
+"""
+    # --- ここから：自動更新JS（f-stringに入れずJinjaで埋め込む） ---
+    poll_js = render_template_string("""
 <script>
-(function(){
+document.addEventListener('DOMContentLoaded', function() {
   // 相手がターン消費したら自動で更新：/poll を1.2秒ごとにチェック
-  const mypid = {pid};
-  let lastSerial = {room['turn_serial']};
-  async function check(){
-    try{
-      const r = await fetch("{url_for('poll', room_id=room_id)}", {cache:"no-store"});
-      const j = await r.json();
-      if(j.phase !== "play" || j.winner !== null){
-        location.reload();
-        return;
-      }
-      if(j.serial !== lastSerial && (j.turn === mypid)){
-        location.reload();
-        return;
-      }
-      lastSerial = j.serial;
-    }catch(e){{}}
+  const mypid = {{ mypid }};
+  let lastSerial = {{ serial }};
+  const POLL_URL = "{{ poll_url }}";
+  function check(){
+    fetch(POLL_URL, {cache:"no-store"})
+      .then(r => r.json())
+      .then(j => {
+        if (j.phase !== "play" || j.winner !== null) {
+          window.location.reload();
+          return;
+        }
+        if (j.serial !== lastSerial && (j.turn === mypid)) {
+          window.location.reload();
+          return;
+        }
+        lastSerial = j.serial;
+      })
+      .catch(() => {});
   }
   setInterval(check, 1200);
-})();
+});
 </script>
-"""
-    return bootstrap_page(f"対戦 - {myname}", body)
+""", mypid=pid, serial=room['turn_serial'], poll_url=url_for('poll', room_id=room_id))
+
+    return bootstrap_page(f"対戦 - {myname}", body + poll_js)
 
 @app.get('/end/<room_id>')
 def end_round(room_id):
