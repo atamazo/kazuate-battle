@@ -1538,33 +1538,103 @@ def handle_trap(room, pid, form):
     my_secret = room['secret'][pid]
 
     turn_consumed = False
+    did_anything = False
 
-    # info 入力
-    bulk = form.get('info_bulk') in ('1', 'on', 'true', 'True')
-    info_keys = ('trap_info_value', 'trap_info_value_1', 'trap_info_value_2', 'trap_info_val')
-    info_inputs = []
-    for k in info_keys:
-        v = form.get(k)
-        if v is None or v == '':
-            continue
+    # --- KILL の処理（上書き1個／ターン消費） ---
+    v = form.get('trap_kill_value')
+    if v not in (None, ''):
         try:
             x = int(v)
         except Exception:
-            continue
-        info_inputs.append(x)
+            x = None
+        if x is not None and (eff_min <= x <= eff_max) and (x != my_secret) and (not (room['allow_negative'] and abs(x) == abs(my_secret))):
+            room['trap_kill'][pid].clear()
+            room['trap_kill'][pid].append(x)
+            push_log(room, f"{myname} が killトラップを {x} に設定")
+            turn_consumed = True
+            did_anything = True
+        else:
+            push_log(room, "⚠ 無効なkillトラップ値です。")
 
-    info_inputs_unique = []
-    for x in info_inputs:
-        if x not in info_inputs_unique:
-            info_inputs_unique.append(x)
-
+    # --- INFO の処理（無料/ターン と まとめ置き） ---
     max_allowed = get_info_max(room, pid)
     free_cap   = room['info_free_per_turn'][pid]
     free_used  = room['info_free_used_this_turn'][pid]
+    bulk = form.get('info_bulk') in ('1','on','true','True')
+
+    # 入力値の収集（重複排除・順序保持）
+    info_keys = ('trap_info_value', 'trap_info_value_1', 'trap_info_value_2', 'trap_info_val')
+    info_inputs = []
+    for k in info_keys:
+        vs = form.get(k)
+        if vs is None or vs == '':
+            continue
+        try:
+            info_inputs.append(int(vs))
+        except Exception:
+            continue
+    seen = set()
+    info_inputs_unique = []
+    for x in info_inputs:
+        if x not in seen:
+            seen.add(x)
+            info_inputs_unique.append(x)
 
     if bulk and info_inputs_unique:
-        added_bulk = []
+        # まとめ置き（ターン消費）
+        added = []
         for x in info_inputs_unique:
             if not (eff_min <= x <= eff_max):
                 continue
-            if x == my_secret or (room['allow_negative'] and abs(x) == abs
+            if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+                continue
+            if x in room['trap_info'][pid] or x in added:
+                continue
+            if len(room['trap_info'][pid]) >= max_allowed:
+                break
+            added.append(x)
+        if added:
+            room['trap_info'][pid].extend(added)
+            push_log(room, f"{myname} が infoトラップをまとめて設定 → {', '.join(map(str, added))}（ターン消費）")
+            turn_consumed = True
+            did_anything = True
+        else:
+            push_log(room, "⚠ infoトラップの追加はありません。")
+    elif (not bulk) and info_inputs_unique:
+        # 単発（無料/ターン枠を1つだけ消費）
+        if free_used >= free_cap:
+            push_log(room, f"（このターンの無料infoは上限 {free_cap} 個に達しています）")
+        else:
+            added = None
+            for x in info_inputs_unique:
+                if not (eff_min <= x <= eff_max):
+                    continue
+                if x == my_secret or (room['allow_negative'] and abs(x) == abs(my_secret)):
+                    continue
+                if x in room['trap_info'][pid]:
+                    continue
+                if len(room['trap_info'][pid]) >= max_allowed:
+                    push_log(room, f"（infoは最大{max_allowed}個までです）")
+                    added = None
+                    break
+                added = x
+                break
+            if added is not None:
+                room['trap_info'][pid].append(added)
+                room['info_free_used_this_turn'][pid] += 1
+                left = max(0, free_cap - room['info_free_used_this_turn'][pid])
+                push_log(room, f"{myname} が infoトラップを {added} に設定（ターン消費なし／このターンはあと {left} 個）")
+                did_anything = True
+
+    # ターン処理
+    if turn_consumed:
+        switch_turn(room, pid)
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
+    if did_anything:
+        # 無料info のみの場合はターンは消費しない
+        return redirect(url_for('play', room_id=get_current_room_id()))
+
+    # 何も行われなかった
+    push_log(room, "⚠ トラップの追加はありません。")
+    return redirect(url_for('play', room_id=get_current_room_id()))
