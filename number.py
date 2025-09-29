@@ -305,7 +305,7 @@ def init_room(allow_negative: bool, target_points: int, rules=None):
         'devotion_used': {1: False, 2: False},
         'devotion_offers': {1: None, 2: None},
         'devotion_info_penalty': {1: 0, 2: 0},
-
+        'skip_suppress_pid': None,
         'turn_serial': 0,
         'tick': 0,
     }
@@ -450,7 +450,7 @@ def index():
 @app.post('/create_room')
 def create_room():
     allow_neg = request.form.get('allow_negative', 'n') == 'y'
-    target_points = int(request.form.get('target_points', 3))
+    target_points = get_int(request.form, 'target_points', 3, 1, 99)
     rules = {
         'trap': bool(request.form.get('rule_trap')),
         'bluff': bool(request.form.get('rule_bluff')),
@@ -520,8 +520,8 @@ def join(room_id, player_id):
     room = player_guard(room_id, player_id)
     if request.method == 'POST':
         name = request.form.get('name', '').strip() or f'プレイヤー{player_id}'
-        secret = int(request.form.get('secret'))
-        if not (room['eff_num_min'] <= secret <= room['eff_num_max']):
+        secret = get_int(request.form, 'secret', None, room['eff_num_min'], room['eff_num_max'])
+        if secret is None:
             err = f"{room['eff_num_min']}〜{room['eff_num_max']}の整数で入力してください。"
             return join_form(room_id, player_id, err)
         room['pname'][player_id] = name
@@ -1912,6 +1912,13 @@ def handle_devotion_pick(room, pid, pick):
     push_log(room, f"{room['pname'][pid]} が 献身で『{role_label(pick)}』を得た（今ターン終了／g&hにCT1／info上限-2）")
     switch_turn(room, pid)
     return redirect(url_for('play', room_id=get_current_room_id()))
+
+
+# グローバル例外ハンドラ
+@app.errorhandler(Exception)
+def _handle_any_exception(e):
+    app.logger.exception("Unhandled error", exc_info=True)
+    return bootstrap_page("内部エラー", f"<div class='alert alert-danger'>サーバーエラー: {type(e).__name__}: {str(e)}</div>"), 500
 
 if __name__ == '__main__':
     # app.config.update(SESSION_COOKIE_SECURE=False)
