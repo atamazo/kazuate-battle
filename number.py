@@ -305,6 +305,7 @@ def init_room(allow_negative: bool, target_points: int, rules=None):
         'rules': rules,
 
         'bluff': {1: None, 2: None},
+        'hint_preview': {1: None, 2: None},
         'hint_penalty_active': {1: False, 2: False},
         'hint_ct': {1: 0, 2: 0},
         'guess_flag_armed': {1: False, 2: False},
@@ -610,6 +611,7 @@ def start_new_round(room):
     room['change_used'] = {1: 0, 2: 0}
     room['available_hints'] = {1: ['和','差','積'], 2: ['和','差','積']}
     room['bluff'] = {1: None, 2: None}
+    room['hint_preview'] = {1: None, 2: None}
     room['hint_penalty_active'] = {1: False, 2: False}
     room['hint_ct'] = {1: 0, 2: 0}
     room['guess_flag_armed'] = {1: False, 2: False}
@@ -1173,31 +1175,51 @@ def _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None):
     opp = 2 if pid == 1 else 1
     opp_secret = room['secret'][opp]
     hidden = room['hidden']
-    if chosen_type in ('和','差','積'):
-        htype = chosen_type
+
+    # --- 先にプレビューがあればそれを使う（確認画面と実値の一致を保証） ---
+    pv = room.get('hint_preview', {}).get(pid)
+    if pv:
+        htype = pv.get('type')         # '和' / '差' / '積'
+        shown = pv.get('shown')        # 既にノイズ適用済みの表示値
+        # 在庫（available_hints）をここで消費
         stock = room['available_hints'][pid]
         if htype in stock:
             stock.remove(htype)
+        # 使い終わったのでクリア
+        room['hint_preview'][pid] = None
+        # プレビュー経由でも「種類指定だったか」を反映（学者・後攻指定）
+        chose_by_user = pv.get('chose_by_user', chose_by_user)
     else:
-        stock = room['available_hints'][pid]
-        if stock:
-            htype = random.choice(stock)
-            stock.remove(htype)
+        # ここからは従来どおりの決定・計算フロー
+        if chosen_type in ('和','差','積'):
+            htype = chosen_type
+            stock = room['available_hints'][pid]
+            if htype in stock:
+                stock.remove(htype)
         else:
-            htype = random.choice(['和','差','積'])
+            stock = room['available_hints'][pid]
+            if stock:
+                htype = random.choice(stock)
+                stock.remove(htype)
+            else:
+                htype = random.choice(['和','差','積'])
 
-    if htype == '和':
-        val = opp_secret + hidden
-    elif htype == '差':
-        val = abs(opp_secret - hidden)
-    else:
-        val = opp_secret * hidden
+        if htype == '和':
+            val = opp_secret + hidden
+        elif htype == '差':
+            val = abs(opp_secret - hidden)
+        else:
+            val = opp_secret * hidden
 
-    shown = _apply_trickster_noise(room, pid, val)
+        shown = _apply_trickster_noise(room, pid, val)
 
+    # --- ログ：指定があった時だけ種別を表示。ランダムは値のみ ---
     if not silent:
         myname = room['pname'][pid]
-        push_log(room, f"{myname} が h（ヒント取得）{htype}＝{shown}")
+        if chose_by_user:
+            push_log(room, f"{myname} が h（ヒント取得）{htype}＝{shown}")
+        else:
+            push_log(room, f"{myname} が h（ヒント取得）＝{shown}")
     return
 
 def handle_guess(room, pid, guess):
@@ -1316,8 +1338,45 @@ def handle_hint(room, pid, form):
 </div></div>
 """
         else:
+            # ここでプレビュー値を計算して保存（決定時に同じ値が出るよう固定）
+            choose_allowed = has_role(room, pid, 'Scholar') or room['hint_choice_available'][pid]
+            allow_choose_now = False
+            if has_role(room, pid, 'Scholar'):
+                # 学者は常に種類指定可能（未指定なら在庫からランダムに後で決定）
+                allow_choose_now = True
+            else:
+                allow_choose_now = bool(want_choose and choose_allowed and choose_type in ('和','差','積'))
+
+            # 実際の種類を決定（指定があればそれ、なければ在庫→無ければランダム）
+            stock = list(room['available_hints'][pid])
+            if allow_choose_now and choose_type in ('和','差','積'):
+                htype = choose_type
+            else:
+                htype = random.choice(stock) if stock else random.choice(['和','差','積'])
+
+            # 値を計算してノイズ適用
+            opp = 2 if pid == 1 else 1
+            opp_secret = room['secret'][opp]
+            hidden = room['hidden']
+            if htype == '和':
+                val = opp_secret + hidden
+            elif htype == '差':
+                val = abs(opp_secret - hidden)
+            else:
+                val = opp_secret * hidden
+            preview_shown = _apply_trickster_noise(room, pid, val)
+
+            # プレビュー保存（_hint_once 側で在庫消費＆ログ出力時に使用）
+            room.setdefault('hint_preview', {1: None, 2: None})
+            room['hint_preview'][pid] = {
+                'type': htype,
+                'shown': preview_shown,
+                'chose_by_user': allow_choose_now
+            }
+
             body = f"""
 <div class="card"><div class="card-header">ヒント（確認）</div><div class="card-body">
+  <p class="h5 mb-3">提示されたヒントの値： <span class="badge bg-warning text-dark">{preview_shown}</span></p>
   <p class="mb-3">このヒントはブラフだと思いますか？</p>
   <form method="post" class="d-inline me-2">
     <input type="hidden" name="action" value="h"><input type="hidden" name="bluff_decision" value="believe">{keep}
@@ -1358,6 +1417,7 @@ def handle_hint(room, pid, form):
             else:
                 room['hint_ct'][pid] = 1
                 push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT1）" + fx_markup('bluff_ng','ぐぬぬ…'))
+            room['hint_preview'][pid] = None
             switch_turn(room, pid)
             return redirect(url_for('play', room_id=get_current_room_id()))
         else:
