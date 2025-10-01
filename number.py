@@ -961,7 +961,7 @@ def play(room_id):
     <form method="post" class="p-2 border rounded">
       <input type="hidden" name="action" value="devotion_offer">
       <label class="form-label">二重職：献身（強力・代償あり）</label>
-      <button class="btn btn-outline-light w-100">候補3から追加ロールを得る（今ターン終了／g&hにCT1／info上限-2）</button>
+      <button class="btn btn-outline-light w-100">候補2から追加ロールを得る（今ターン終了／g&hにCT1／info上限-2）</button>
     </form>
   </div>
 """
@@ -1042,6 +1042,8 @@ def play(room_id):
         <div class="mb-1"><span class="badge bg-secondary">自分の秘密の数</span> <span class="value">{room['secret'][pid]}</span></div>
         <div class="mb-1"><span class="badge bg-secondary">CT</span> c:<span class="value">{room['cooldown'][pid]}</span> / h:<span class="value">{room['hint_ct'][pid]}</span> / g:<span class="value">{room['guess_ct'][pid]}</span></div>
         <div class="mb-1"><span class="badge bg-secondary">ロール</span> <span class="value">{my_role}</span>{ " ＋ " + extra_role if room['role_extra'][pid] else "" }</div>
+{ (f"<div class='small text-muted ms-1'>— {role_desc(room['role_main'][pid])}</div>") if room['role_main'][pid] else "" }
+{ (f"<div class='small text-muted ms-1'>— {role_desc(room['role_extra'][pid])}</div>") if room['role_extra'][pid] else "" }
         <div class="mb-1"><span class="badge bg-secondary">トラップ</span><br>
         {("<span class='small text-warning'>A(kill): <span class='value'>" + (", ".join(map(str, room['trap_kill'][pid])) if room['trap_kill'][pid] else "なし") + "</span></span><br><span class='small text-warning'>B(info): <span class='value'>" + (", ".join(map(str, room['trap_info'][pid])) if room['trap_info'][pid] else "なし") + f"</span></span><br><span class='small text-warning'>info最大: <span class='value'>{get_info_max(room, pid)}</span></span>") if room['rules'].get('trap', True) else "<span class='small text-warning'>このルームでは無効</span>" }
         </div>
@@ -1872,32 +1874,41 @@ def handle_yn(room, pid, form):
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_devotion_offer(room, pid):
-    if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
+    if not room['rules'].get('devotion', True) or not room['rules'].get('roles', True):
         return push_and_back(room, pid, "（このルームでは献身は無効です）")
     if room['devotion_used'][pid]:
-        return push_and_back(room, pid, "（このラウンドは既に献身済みです）")
+        return push_and_back(room, pid, "（このラウンドは既に献身を使用しています）")
+
+    # 既に持っているロールを除外し、候補は最大2つ
     pool = [k for k in ROLES.keys() if k != room['role_main'][pid] and k != room['role_extra'][pid]]
-    if len(pool) < 3:
-        pool = list(ROLES.keys())
-    offers = random.sample(pool, 3) if len(pool) >= 3 else pool
+    offers = random.sample(pool, min(2, len(pool))) if pool else []
     room['devotion_offers'][pid] = offers
-    names = [role_label(o) for o in offers]
-    push_log(room, f"{room['pname'][pid]} が 献身の候補を開いた（{', '.join(names)}）")
-    opts = "".join([f"""
-    <form method='post' class='d-inline me-2'>
-      <input type='hidden' name='action' value='devotion_pick'>
-      <input type='hidden' name='pick' value='{o}'>
-      <button class='btn btn-primary mb-2'>{role_label(o)} を選ぶ</button>
-    </form>
-    """ for o in offers])
+
+    if not offers:
+        return push_and_back(room, pid, "（候補となるロールがありません）")
+
+    # 説明付きのカードUI
+    cards = "".join(f"""
+      <div class="col-12 col-md-6">
+        <div class="p-2 border rounded h-100">
+          <div class="h6 mb-1">{role_label(code)}</div>
+          <div class="small text-muted mb-2">— {role_desc(code)}</div>
+          <form method="post">
+            <input type="hidden" name="action" value="devotion_pick">
+            <input type="hidden" name="pick" value="{code}">
+            <button class="btn btn-primary w-100">これにする</button>
+          </form>
+        </div>
+      </div>""" for code in offers)
+
     body = f"""
-<div class="card"><div class="card-header">二重職：献身（ラウンド中のみ）</div><div class="card-body">
-  <p>候補3から1つ選んで追加で取得します（このターンは終了し、g/h にCT1が付与、さらにあなたの info最大が-2）。</p>
-  <div class="mb-2">{opts}</div>
-  <a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a>
+<div class="card"><div class="card-header">二重職：献身（候補2）</div><div class="card-body">
+  <p class="small text-warning">選ぶと今ターンは終了し、あなたに g:CT1 / h:CT1 が付与され、今ラウンドの info最大が-2されます。</p>
+  <div class="row g-2">{cards}</div>
+  <div class="mt-3"><a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a></div>
 </div></div>
 """
-    return bootstrap_page("献身の選択", body)
+    return bootstrap_page("二重職：献身", body)
 
 def handle_devotion_pick(room, pid, pick):
     if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
