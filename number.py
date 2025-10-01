@@ -215,7 +215,7 @@ def bootstrap_page(title, body_html):
                 </ul>
               </li>
               <li class="mb-2"><strong>Yes/No 質問（ON時）</strong>：ターン消費なしで二択質問を送れる（例：「≥X？」「≤X？」「=X？」「範囲[A,B]内？」）。奇数/偶数は質問不可。通常はラウンド1回だけ。</li>
-              <li class="mb-2"><strong>二重職：献身（ON時）</strong>：自分のターンで候補3から追加で1ロールを取得（ラウンド限定）。代償として今ターン終了、さらに <code>guess_ct=1</code> & <code>hint_ct=1</code>、加えて自分のinfo最大を<strong>2個減少</strong>（そのラウンド中）。</li>
+              <li class="mb-2"><strong>二重職：献身（ON時）</strong>：自分のターンで候補2から追加で1ロールを取得（ラウンド限定）。代償として今ターン終了、さらに <code>guess_ct=1</code> & <code>hint_ct=1</code>、加えて自分のinfo最大を<strong>2個減少</strong>（そのラウンド中）。</li>
             </ol>
             <p class="small text-warning">ログは infoトラップ発動以降のみ相手の行動詳細が見える仕様です。</p>
           </div>
@@ -533,10 +533,35 @@ def room_lobby(room_id):
     l2 = url_for('join', room_id=room_id, player_id=2, _external=True)
     p1 = room['pname'][1] or '未参加'
     p2 = room['pname'][2] or '未参加'
+
+    # クイック入力（次ラウンドの秘密の数のみ）
+    quick = ""
+    if room['phase'] == 'lobby' and room['pname'][1] and room['pname'][2]:
+        pid = session.get('player_id')
+        rid = session.get('room_id')
+        if rid == room_id and pid in (1, 2) and room['secret'][pid] is None:
+            quick = f"""
+<div class="card mb-3">
+  <div class="card-header">次ラウンド準備：新しい数を入力（プレイヤー{pid}）</div>
+  <div class="card-body">
+    <div class="mb-2"><span class="badge bg-secondary">ニックネーム</span> <span class="value">{room['pname'][pid]}</span> <span class="small text-muted">（再入力不要）</span></div>
+    <form method="post" action="{url_for('set_secret', room_id=room_id, player_id=pid)}">
+      <div class="mb-3">
+        <label class="form-label">秘密の数字 ({room['eff_num_min']}〜{room['eff_num_max']})</label>
+        <input class="form-control" name="secret" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
+      </div>
+      <button class="btn btn-primary w-100">この数で開始</button>
+      <div class="small text-warning mt-1">※ 次ラウンドからは名前入力は不要です</div>
+    </form>
+  </div>
+</div>
+"""
+
     body = f"""
 <div class="card mb-3">
   <div class="card-header">ルーム {room_id}</div>
   <div class="card-body">
+  {quick}
   <div class="p-3 rounded border border-secondary mb-3">
     <div class="small text-warning">ルーム番号</div>
     <div class="h1 m-0 value">{room_id}</div>
@@ -566,26 +591,69 @@ def room_lobby(room_id):
 """
     return bootstrap_page(f"ロビー {room_id}", body)
 
+
 @app.route('/join/<room_id>/<int:player_id>', methods=['GET','POST'])
 def join(room_id, player_id):
     room = player_guard(room_id, player_id)
+    # 既に名前があり、かつラウンド間ロビー中なら「秘密の数のみ」モード
+    simple_mode = (room['pname'][player_id] is not None and room['phase'] == 'lobby' and room['secret'][player_id] is None)
+
     if request.method == 'POST':
-        name = request.form.get('name', '').strip() or f'プレイヤー{player_id}'
-        secret = int(request.form.get('secret'))
-        if not (room['eff_num_min'] <= secret <= room['eff_num_max']):
-            err = f"{room['eff_num_min']}〜{room['eff_num_max']}の整数で入力してください。"
-            return join_form(room_id, player_id, err)
-        room['pname'][player_id] = name
-        room['secret'][player_id] = secret
-        session['room_id'] = room_id
-        session['player_id'] = player_id
-        if room['pname'][1] and room['pname'][2]:
-            start_new_round(room)
-        return redirect(url_for('play', room_id=room_id) + f"?as={player_id}")
+        if simple_mode:
+            secret = get_int(request.form, 'secret', default=None,
+                             min_v=room['eff_num_min'], max_v=room['eff_num_max'])
+            if secret is None:
+                err = f"{room['eff_num_min']}〜{room['eff_num_max']}の整数で入力してください。"
+                return join_form(room_id, player_id, err)
+            room['secret'][player_id] = secret
+            session['room_id'] = room_id
+            session['player_id'] = player_id
+            if room['secret'][1] is not None and room['secret'][2] is not None:
+                start_new_round(room)
+            return redirect(url_for('play', room_id=room_id) + f"?as={player_id}")
+        else:
+            name = request.form.get('name', '').strip() or f'プレイヤー{player_id}'
+            secret = get_int(request.form, 'secret', default=None,
+                             min_v=room['eff_num_min'], max_v=room['eff_num_max'])
+            if secret is None:
+                err = f"{room['eff_num_min']}〜{room['eff_num_max']}の整数で入力してください。"
+                return join_form(room_id, player_id, err)
+            room['pname'][player_id] = name
+            room['secret'][player_id] = secret
+            session['room_id'] = room_id
+            session['player_id'] = player_id
+            if room['pname'][1] and room['pname'][2]:
+                start_new_round(room)
+            return redirect(url_for('play', room_id=room_id) + f"?as={player_id}")
+
     return join_form(room_id, player_id)
 
 def join_form(room_id, player_id, error=None):
     room = rooms[room_id]
+    simple_mode = (room['pname'][player_id] is not None and room['phase'] == 'lobby' and room['secret'][player_id] is None)
+
+    if simple_mode:
+        body = f"""
+<div class="card">
+  <div class="card-header">ルーム {room_id} に プレイヤー{player_id} として参加（名前は前ラウンドのまま）</div>
+  <div class="card-body">
+    {"<div class='alert alert-danger'>" + error + "</div>" if error else ""}
+    <form method="post">
+      <div class="mb-2">
+        <span class="badge bg-secondary">ニックネーム</span> <span class="value">{room['pname'][player_id]}</span>
+        <div class="small text-muted">※ 再入力不要です</div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">新しい秘密の数字 ({room['eff_num_min']}〜{room['eff_num_max']})</label>
+        <input class="form-control" type="number" name="secret" required min="{room['eff_num_min']}" max="{room['eff_num_max']}" placeholder="{room['eff_num_min']}〜{room['eff_num_max']}">
+      </div>
+      <button class="btn btn-primary w-100">この数で開始</button>
+    </form>
+  </div>
+</div>
+"""
+        return bootstrap_page("参加（数のみ）", body)
+
     body = f"""
 <div class="card">
   <div class="card-header">ルーム {room_id} に プレイヤー{player_id} として参加</div>
@@ -606,6 +674,25 @@ def join_form(room_id, player_id, error=None):
 </div>
 """
     return bootstrap_page("参加", body)
+
+
+# --- 新規: クイック秘密の数入力の受け口 ---
+@app.post('/set_secret/<room_id>/<int:player_id>')
+def set_secret(room_id, player_id):
+    room = player_guard(room_id, player_id)
+    # セッションをプレイヤーにバインド
+    session['room_id'] = room_id
+    session['player_id'] = player_id
+    secret = get_int(request.form, 'secret', default=None,
+                     min_v=room['eff_num_min'], max_v=room['eff_num_max'])
+    if secret is None:
+        err = f"{room['eff_num_min']}〜{room['eff_num_max']}の整数で入力してください。"
+        return join_form(room_id, player_id, err)
+    room['secret'][player_id] = secret
+    if room['secret'][1] is not None and room['secret'][2] is not None:
+        start_new_round(room)
+    return redirect(url_for('play', room_id=room_id) + f"?as={player_id}")
+
 
 def start_new_round(room):
     room['hidden'] = random.randint(room['eff_hidden_min'], room['eff_hidden_max'])
@@ -680,10 +767,18 @@ def poll(room_id):
     })
 
 # ===== kill 閾値（罠師なら±2/±6、通常±1/±5） =====
+# ===== kill 閾値（罠師なら±2/±6、通常±1/±5） =====
 def _kill_thresholds(room, trap_owner_pid):
     if has_role(room, trap_owner_pid, 'Trapper'):
         return 2, 6
     return 1, 5
+
+# 任意: get_current_room_id
+def get_current_room_id():
+    rid = session.get('room_id')
+    if rid in rooms:
+        return rid
+    return request.view_args.get('room_id')
 
 @app.route('/play/<room_id>', methods=['GET','POST'])
 def play(room_id):
@@ -1892,32 +1987,66 @@ def handle_yn(room, pid, form):
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_devotion_offer(room, pid):
-    if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
+    # ルール/状態チェック
+    if not (room['rules'].get('roles', True) and room['rules'].get('devotion', True)):
         return push_and_back(room, pid, "（このルームでは献身は無効です）")
     if room['devotion_used'][pid]:
-        return push_and_back(room, pid, "（このラウンドは既に献身済みです）")
-    pool = [k for k in ROLES.keys() if k != room['role_main'][pid] and k != room['role_extra'][pid]]
-    if len(pool) < 3:
-        pool = list(ROLES.keys())
-    offers = random.sample(pool, 3) if len(pool) >= 3 else pool
+        return push_and_back(room, pid, "（このラウンドは既に献身を使っています）")
+
+    # 自分の既存ロールは候補から除外して2つ提示
+    pool = [k for k in ROLES.keys() if k not in (room['role_main'][pid], room['role_extra'][pid])]
+    offers = random.sample(pool, 2)
     room['devotion_offers'][pid] = offers
-    names = [role_label(o) for o in offers]
-    push_log(room, f"{room['pname'][pid]} が 献身の候補を開いた（{', '.join(names)}）")
-    opts = "".join([f"""
-    <form method='post' class='d-inline me-2'>
-      <input type='hidden' name='action' value='devotion_pick'>
-      <input type='hidden' name='pick' value='{o}'>
-      <button class='btn btn-primary mb-2'>{role_label(o)} を選ぶ</button>
+
+    # 2候補＋各ロール説明を表示
+    cards = []
+    for code in offers:
+        name = role_label(code)
+        desc = role_desc(code)
+        cards.append(f"""
+<div class="col-12 col-md-6">
+  <div class="p-3 rounded border border-secondary h-100">
+    <div class="h5 mb-2">{name}</div>
+    <div class="small text-muted mb-3">— {desc}</div>
+    <form method="post">
+      <input type="hidden" name="action" value="devotion_pick">
+      <input type="hidden" name="pick" value="{code}">
+      <button class="btn btn-primary w-100">このロールを選ぶ</button>
     </form>
-    """ for o in offers])
+  </div>
+</div>
+""")
     body = f"""
-<div class="card"><div class="card-header">二重職：献身（ラウンド中のみ）</div><div class="card-body">
-  <p>候補3から1つ選んで追加で取得します（このターンは終了し、g/h にCT1が付与、さらにあなたの info最大が-2）。</p>
-  <div class="mb-2">{opts}</div>
-  <a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a>
-</div></div>
+<div class="card">
+  <div class="card-header">二重職：献身（ロール選択）</div>
+  <div class="card-body">
+    <p class="mb-3">候補<strong>2</strong>から追加ロールを選んでください。選択すると<strong>今ターンは終了</strong>し、あなたの <code>guess_ct=1</code> と <code>hint_ct=1</code> が付与され、さらにこのラウンド中は info上限が<strong>2減少</strong>します。</p>
+    <div class="row g-3">{''.join(cards)}</div>
+    <div class="mt-3"><a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a></div>
+  </div>
+</div>
 """
-    return bootstrap_page("献身の選択", body)
+    return bootstrap_page("献身 - ロール選択", body)
+
+def handle_devotion_pick(room, pid, pick):
+    offers = room['devotion_offers'][pid]
+    if not offers or pick not in offers:
+        return push_and_back(room, pid, "⚠ 候補から選んでください。")
+
+    # 付与＆ペナルティ
+    room['role_extra'][pid] = pick
+    room['devotion_used'][pid] = True
+    room['devotion_offers'][pid] = None
+    room['devotion_info_penalty'][pid] += 2  # get_info_max()で -2 反映
+
+    room['guess_ct'][pid] = max(room['guess_ct'][pid], 1)
+    room['hint_ct'][pid]  = max(room['hint_ct'][pid], 1)  # 学者でも献身ペナルティは付ける仕様
+
+    # ログ＆ターンエンド
+    myname = room['pname'][pid]
+    push_log(room, f"{myname} は 献身で『{role_label(pick)}』を選んだ（今ターン終了／g&hにCT1／info上限-2）")
+    switch_turn(room, pid)
+    return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_devotion_pick(room, pid, pick):
     if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
