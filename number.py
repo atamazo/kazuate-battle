@@ -34,10 +34,23 @@ ROLES = {
     'Disarmer': '解除士',
     'Trickster':'詐欺師',
     'Analyst':  '分析屋',
+    'Tuner':    '調律士',
 }
 
 def role_label(code):
     return ROLES.get(code, '—')
+
+def role_desc(code):
+    desc = {
+        'Scholar':  'ラウンド中ずっとヒント種類指定可＆ヒントCT無効。',
+        'Guardian': '自分の「次ターンスキップ」を1度だけ自動無効化（このラウンド）。',
+        'Trapper':  'info最大 +3。さらに自分のkillは±2即死／±6スキップに強化。',
+        'Disarmer': '自分のターン開始時、2ターンに1回 相手のinfoをランダム解除（CD2）。',
+        'Trickster':'相手がブラフ指摘に失敗するとヒントCT2。さらに相手が得た本物ヒント表示に±1ノイズ。',
+        'Analyst':  'Yes/No質問がクールタイム2、ラウンド3回まで（同一ターン連打は不可）。',
+        'Tuner':    '自分の数の変更がCT5、ラウンド最大3回まで使用可能。',
+    }
+    return desc.get(code, '—')
 
 rooms = {}
 
@@ -189,7 +202,7 @@ def bootstrap_page(title, body_html):
                 宣言者は<strong>ラウンド中ずっと</strong>、無料infoが<strong>1ターン2個</strong>に、info最大数が<strong>10</strong>に。</li>
               <li class="mb-2"><strong>サドン・プレス</strong>（ON時）：ハズレ直後に同ターンでもう1回だけ連続予想（当たれば勝利、外せば次ターンスキップ）。各ラウンド1回。<br>
                 「使わない」を選ぶと<strong>相手のターンに移行</strong>。</li>
-              <li class="mb-2"><strong>自分の数の変更（c）</strong>：自分のトラップ値とは重複不可。各ラウンド<strong>2回まで</strong>。使用後は自分の<span class="value">CT7</span>、かつ相手のヒント在庫をリセット。</li>
+              <li class="mb-2"><strong>自分の数の変更（c）</strong>：自分のトラップ値とは重複不可。通常は各ラウンド<strong>2回まで</strong>・使用後は自分の<span class="value">CT7</span>。<br>※<em>調律士</em>なら <strong>CT5</strong>・ラウンド<strong>最大3回</strong>まで。使用時は相手のヒント在庫をリセット。</li>
               <li class="mb-2"><strong>ロール（ON時）</strong>：各ラウンド開始時にランダム配布（自分だけ確認可）。
                 <ul>
                   <li><em>学者</em>：ラウンド中ずっとヒント種類指定可＆ヒントCT無効。</li>
@@ -198,6 +211,7 @@ def bootstrap_page(title, body_html):
                   <li><em>解除士</em>：自分のターン開始時、<strong>2ターンに1回</strong> 相手のinfoをランダム解除（CD2）。</li>
                   <li><em>詐欺師</em>：相手がブラフ指摘に失敗するとヒントCT2。さらに相手が得た本物ヒントは表示値に±1のノイズ。</li>
                   <li><em>分析屋</em>：Yes/No質問がクールタイム2、ラウンド3回まで（同一ターン連打は不可）。</li>
+                  <li><em>調律士</em>：自分の数の変更が<strong>CT5</strong>、ラウンド<strong>最大3回</strong>まで使用可能。</li>
                 </ul>
               </li>
               <li class="mb-2"><strong>Yes/No 質問（ON時）</strong>：ターン消費なしで二択質問を送れる（例：「≥X？」「≤X？」「=X？」「範囲[A,B]内？」）。奇数/偶数は質問不可。通常はラウンド1回だけ。</li>
@@ -854,6 +868,8 @@ def play(room_id):
             yn_left -= room['yn_used_count'][pid]
             yn_ct = room['yn_ct'][pid]
             devotion_ok = ru.get('devotion', True) and ru.get('roles', True) and (not room['devotion_used'][pid])
+            change_limit = 3 if has_role(room, pid, 'Tuner') else 2
+            change_ct = 5 if has_role(room, pid, 'Tuner') else 7
 
             trap_block = ""
             if ru.get('trap', True):
@@ -998,11 +1014,11 @@ def play(room_id):
           <input type="hidden" name="action" value="c">
           <label class="form-label">自分の数を変更</label>
           <input class="form-control mb-2" name="new_secret" type="number" required min="{room['eff_num_min']}" max="{room['eff_num_max']}">
-          <button class="btn btn-outline-light w-100" {"disabled" if (room['cooldown'][pid] > 0 or room['change_used'][pid] >= 2) else ""}>
-            変更する（CT7・ラウンド2回まで）
+          <button class="btn btn-outline-light w-100" {"disabled" if (room['cooldown'][pid] > 0 or room['change_used'][pid] >= change_limit) else ""}>
+            変更する（CT{change_ct}・ラウンド{change_limit}回まで）
           </button>
           <div class="small text-warning mt-1">
-            このラウンドの使用回数：<span class="value">{room['change_used'][pid]}</span>/2
+            このラウンドの使用回数：<span class="value">{room['change_used'][pid]}</span>/{change_limit}
             { " ／（CT中）" if room['cooldown'][pid] > 0 else "" }
           </div>
         </form>
@@ -1447,13 +1463,15 @@ def handle_change(room, pid, new_secret):
         push_log(room, "⚠ 範囲外の数字です。")
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
-    if room['change_used'][pid] >= 2:
-        push_log(room, "（このラウンドでの自分の数の変更は2回まで）")
+    limit = 3 if has_role(room, pid, 'Tuner') else 2
+    ct = 5 if has_role(room, pid, 'Tuner') else 7
+    if room['change_used'][pid] >= limit:
+        push_log(room, f"（このラウンドでの自分の数の変更は{limit}回まで）")
         switch_turn(room, pid)
         return redirect(url_for('play', room_id=get_current_room_id()))
 
     room['secret'][pid] = new_secret
-    room['cooldown'][pid] = 7
+    room['cooldown'][pid] = ct
     room['change_used'][pid] += 1
 
     room['decl1_value'][pid] = None
@@ -1874,41 +1892,32 @@ def handle_yn(room, pid, form):
     return redirect(url_for('play', room_id=get_current_room_id()))
 
 def handle_devotion_offer(room, pid):
-    if not room['rules'].get('devotion', True) or not room['rules'].get('roles', True):
+    if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
         return push_and_back(room, pid, "（このルームでは献身は無効です）")
     if room['devotion_used'][pid]:
-        return push_and_back(room, pid, "（このラウンドは既に献身を使用しています）")
-
-    # 既に持っているロールを除外し、候補は最大2つ
+        return push_and_back(room, pid, "（このラウンドは既に献身済みです）")
     pool = [k for k in ROLES.keys() if k != room['role_main'][pid] and k != room['role_extra'][pid]]
-    offers = random.sample(pool, min(2, len(pool))) if pool else []
+    if len(pool) < 3:
+        pool = list(ROLES.keys())
+    offers = random.sample(pool, 3) if len(pool) >= 3 else pool
     room['devotion_offers'][pid] = offers
-
-    if not offers:
-        return push_and_back(room, pid, "（候補となるロールがありません）")
-
-    # 説明付きのカードUI
-    cards = "".join(f"""
-      <div class="col-12 col-md-6">
-        <div class="p-2 border rounded h-100">
-          <div class="h6 mb-1">{role_label(code)}</div>
-          <div class="small text-muted mb-2">— {role_desc(code)}</div>
-          <form method="post">
-            <input type="hidden" name="action" value="devotion_pick">
-            <input type="hidden" name="pick" value="{code}">
-            <button class="btn btn-primary w-100">これにする</button>
-          </form>
-        </div>
-      </div>""" for code in offers)
-
+    names = [role_label(o) for o in offers]
+    push_log(room, f"{room['pname'][pid]} が 献身の候補を開いた（{', '.join(names)}）")
+    opts = "".join([f"""
+    <form method='post' class='d-inline me-2'>
+      <input type='hidden' name='action' value='devotion_pick'>
+      <input type='hidden' name='pick' value='{o}'>
+      <button class='btn btn-primary mb-2'>{role_label(o)} を選ぶ</button>
+    </form>
+    """ for o in offers])
     body = f"""
-<div class="card"><div class="card-header">二重職：献身（候補2）</div><div class="card-body">
-  <p class="small text-warning">選ぶと今ターンは終了し、あなたに g:CT1 / h:CT1 が付与され、今ラウンドの info最大が-2されます。</p>
-  <div class="row g-2">{cards}</div>
-  <div class="mt-3"><a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a></div>
+<div class="card"><div class="card-header">二重職：献身（ラウンド中のみ）</div><div class="card-body">
+  <p>候補3から1つ選んで追加で取得します（このターンは終了し、g/h にCT1が付与、さらにあなたの info最大が-2）。</p>
+  <div class="mb-2">{opts}</div>
+  <a class="btn btn-outline-light" href="{url_for('play', room_id=get_current_room_id())}">戻る</a>
 </div></div>
 """
-    return bootstrap_page("二重職：献身", body)
+    return bootstrap_page("献身の選択", body)
 
 def handle_devotion_pick(room, pid, pick):
     if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
