@@ -823,6 +823,9 @@ def play(room_id):
 """
         return bootstrap_page("相手待ち", wait_body)
 
+    # ロビー中に両者の新しい数がそろっていたら、ここで必ず新ラウンドを開始
+    if room['phase'] == 'lobby' and room['secret'][1] is not None and room['secret'][2] is not None:
+        start_new_round(room)
     if room['winner'] is not None:
         return redirect(url_for('end_round', room_id=room_id))
 
@@ -1273,6 +1276,7 @@ def next_round(room_id):
     room['secret'][1] = None
     room['secret'][2] = None
     room['phase'] = 'lobby'
+    room['winner'] = None  # 前ラウンドの勝者状態をクリア（誤って結果画面へ飛ばないように）
     return redirect(url_for('room_lobby', room_id=room_id))
 
 @app.get('/finish/<room_id>')
