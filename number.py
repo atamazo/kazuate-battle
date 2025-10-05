@@ -4,9 +4,10 @@ import random, string, os
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "imigawakaranai")
+# ローカル開発ではHTTPのため、Secureクッキーを無効化（本番は環境変数で切替推奨）
 app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',
-    SESSION_COOKIE_SECURE=True
+    SESSION_COOKIE_SECURE=False
 )
 
 # ====== 定数 ======
@@ -150,6 +151,24 @@ def bootstrap_page(title, body_html):
       opacity:0; pointer-events:none; transition: opacity .15s, transform .25s;
     }
     .toast-bubble.show { opacity:1; transform: translate(-50%, 0); }
+    /* === FX image overlay === */
+    @keyframes fadeInFx {
+      from { opacity: 0; transform: scale(.98); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    .fx-img-overlay {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,.6);
+      z-index: 3000;
+      animation: fadeInFx .15s ease-out;
+    }
+    .fx-img-overlay img {
+      max-width: min(60vw, 520px);
+      max-height: min(60vh, 520px);
+      border-radius: .5rem;
+      box-shadow: 0 8px 28px rgba(0,0,0,.55);
+    }
   </style>
 </head>
 <body>
@@ -246,6 +265,16 @@ def bootstrap_page(title, body_html):
         change:      "/static/sfx/change.mp3",
       };
 
+      // --- image assets for bluff/lie judgement ---
+      // 置き場所の想定: /static/img/bluff_success.png, /static/img/bluff_fail.png
+      const FX_IMG_SUCCESS = "/static/img/bluff_success.png"; // 黒背景のスリム
+      const FX_IMG_FAIL    = "/static/img/bluff_fail.png";    // 茶色背景のほっちゃり
+
+      // --- image assets for round result (win/lose) ---
+      // 置き場所の想定: /static/img/round_win.png, /static/img/round_lose.png
+      const FX_ROUND_WIN  = "/static/img/round_win.png";  // カラフルな方
+      const FX_ROUND_LOSE = "/static/img/round_lose.png"; // ほぼ白黒
+
       function playSfx(key, vol=0.55){
         const src = SFX[key];
         if(!src) return;
@@ -260,14 +289,51 @@ def bootstrap_page(title, body_html):
         setTimeout(()=> el.classList.remove("show"), 950);
       }
 
-      function screenShake(){ document.body.classList.add("screen-shake"); setTimeout(()=>document.body.classList.remove("screen-shake"), 380); }
+      function screenShake(){
+        document.body.classList.add("screen-shake");
+        setTimeout(()=>document.body.classList.remove("screen-shake"), 380);
+      }
+
+      function showFxImage(url){
+        if(!url) return;
+        const wrap = document.createElement("div");
+        wrap.className = "fx-img-overlay";
+        const img = new Image();
+        img.src = url;
+        wrap.appendChild(img);
+        document.body.appendChild(wrap);
+        setTimeout(()=> wrap.remove(), 1500);
+      }
 
       (function(){
-        const last = document.querySelector(".log-box ol li:last-child .fx");
-        if(!last) return;
-        const key = last.dataset.sfx;
-        const shout = last.dataset.shout;
-        if (key) { playSfx(key); if (["guess_hit","kill_dead","flag_boom"].includes(key)) screenShake(); }
+        // 最後のログ行を取得（fxの有無で分岐）
+        const lastLi = document.querySelector(".log-box ol li:last-child");
+        if(!lastLi) return;
+
+        const fxEl  = lastLi.querySelector(".fx");
+        const key   = fxEl ? (fxEl.dataset.sfx || "") : "";
+        const shout = fxEl ? (fxEl.dataset.shout || "") : "";
+
+        if (key) {
+          // 通常の効果音／演出
+          playSfx(key);
+          if (["guess_hit","kill_dead","flag_boom"].includes(key)) screenShake();
+
+          // ブラフ判定 or 嘘だコールの成否に応じて画像表示
+          if (["bluff_ok","decl_ok"].includes(key)) showFxImage(FX_IMG_SUCCESS);
+          if (["bluff_ng","decl_ng"].includes(key)) showFxImage(FX_IMG_FAIL);
+        } else {
+          // fxタグが無いケース（主に『嘘だ！』コールの旧ログ）をテキストで判定
+          const t = (lastLi.textContent || "");
+          if (t.includes("嘘だ")) {
+            if (t.includes("成功")) {
+              showFxImage(FX_IMG_SUCCESS);
+            } else if (t.includes("失敗") || t.includes("スキップ")) {
+              showFxImage(FX_IMG_FAIL);
+            }
+          }
+        }
+
         if (shout) toast(shout);
       })();
     </script>
@@ -834,11 +900,14 @@ def play(room_id):
 """
         return bootstrap_page("相手待ち", wait_body)
 
-    # ロビー中に両者の新しい数がそろっていたら、ここで必ず新ラウンドを開始
-    if room['phase'] == 'lobby' and room['secret'][1] is not None and room['secret'][2] is not None:
-        start_new_round(room)
-    if room['winner'] is not None:
-        return redirect(url_for('end_round', room_id=room_id))
+    # ロビー中：両者の新しい数がそろっていれば開始、そうでなければロビーへ戻す
+    if room['phase'] == 'lobby':
+        if room['secret'][1] is not None and room['secret'][2] is not None:
+            start_new_round(room)
+        else:
+            return redirect(url_for('room_lobby', room_id=room_id) + f"?as={pid}")
+        if room['winner'] is not None:
+            return redirect(url_for('end_round', room_id=room_id))
 
     if room['skip_next_turn'][room['turn']] and room.get('skip_suppress_pid') != room['turn']:
         room['skip_next_turn'][room['turn']] = False
@@ -1186,29 +1255,36 @@ def play(room_id):
     </div>
   </div>
 </div>
+"""
 
+    script_vars = f"""
 <script>
-(function(){{
   const mypid = {pid};
   let lastSerial = {room['turn_serial']};
-  async function check(){{ 
-    try{{ 
-      const r = await fetch("{url_for('poll', room_id=room_id)}", {{cache:"no-store"}});
-      const j = await r.json();
-      if(j.phase !== "play" || j.winner !== null){{ 
-        location.reload(); return;
-      }}
-      if(j.serial !== lastSerial && (j.turn === mypid)){{ 
-        location.reload(); return;
-      }}
-      lastSerial = j.serial;
-    }}catch(e){{}}
-  }}
-  setInterval(check, 1200);
-}})();
+  const POLL_URL  = "{url_for('poll', room_id=room_id)}";
+  const END_URL   = "{url_for('end_round', room_id=room_id)}?as={pid}";
+  const LOBBY_URL = "{url_for('room_lobby', room_id=room_id)}?as={pid}";
 </script>
 """
-    return bootstrap_page(f"対戦 - {myname}", body)
+
+    script_poll = r"""
+<script>
+(function(){
+  async function check(){
+    try{
+      const r = await fetch(POLL_URL, {cache:"no-store"});
+      const j = await r.json();
+      if (j.winner !== null) { window.location.href = END_URL;  return; }
+      if (j.phase  !== "play"){ window.location.href = LOBBY_URL; return; }
+      if (j.serial !== lastSerial && (j.turn === mypid)) { location.reload(); return; }
+      lastSerial = j.serial;
+    }catch(e){}
+  }
+  setInterval(check, 1200);
+})();
+</script>
+"""
+    return bootstrap_page(f"対戦 - {myname}", body + script_vars + script_poll)
 
 @app.get('/end/<room_id>')
 def end_round(room_id):
@@ -1221,6 +1297,10 @@ def end_round(room_id):
     p1, p2 = room['pname'][1], room['pname'][2]
     target = room['target_points']
     match_over = (room['score'][1] >= target) or (room['score'][2] >= target)
+    # 表示者（ブラウザ側）の勝敗を判定するため、?as= からプレイヤーIDを取得
+    as_pid = request.args.get('as')
+    viewer_pid = int(as_pid) if as_pid in ('1','2') else None
+    view_state = 'win' if viewer_pid == winner else ('lose' if viewer_pid in (1,2) else '')
 
     log_html_full = "".join(f"<li>{e}</li>" for e in room['actions'])
     body = f"""
@@ -1246,35 +1326,49 @@ def end_round(room_id):
     <div class="log-box"><ol class="mb-0">{log_html_full}</ol></div>
   </div>
 </div>
+"""
 
+    script_vars = f"""
 <script>
-(function(){{ 
-  try{{ new Audio("/static/sfx/win.mp3").play().catch(()=>{{}}); }}catch(_){{
-  }}
-  const c = document.createElement('canvas');
-  Object.assign(c.style, {{position:'fixed', inset:0, zIndex:1500, pointerEvents:'none'}});
-  document.body.appendChild(c);
-  const ctx = c.getContext('2d'); let W,H; const rs=[]; const N=80;
-  function resize(){{ W= c.width = innerWidth; H= c.height = innerHeight; }}
-  addEventListener('resize', resize); resize();
-  for(let i=0;i<N;i++){{ rs.push({{x:Math.random()*W, y:-20-Math.random()*H, v:1+Math.random()*3, s:4+Math.random()*6, r:Math.random()*6}}); }}
-  let t=0, id=0;
-  (function loop(){{ 
-    ctx.clearRect(0,0,W,H);
-    for(const p of rs){{ 
-      p.y += p.v; p.x += Math.sin((t+p.y)/30); p.r += 0.05;
-      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.r);
-      ctx.fillStyle=`hsl(${{(p.y/3+t)%360}},90%,60%)`;
-      ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s);
-      ctx.restore();
-    }}
-    t++; id=requestAnimationFrame(loop);
-    if(t>180){{ cancelAnimationFrame(id); c.remove(); }}
-  }})();
-}})();
+  const ROUND_VIEW_STATE = "{view_state}"; // 'win' | 'lose' | ''
 </script>
 """
-    return bootstrap_page("ラウンド結果", body)
+
+    script_fx = r"""
+<script>
+(function(){
+  try{ new Audio("/static/sfx/win.mp3").play().catch(()=>{}); }catch(_){}
+  const c = document.createElement('canvas');
+  Object.assign(c.style, {position:'fixed', inset:0, zIndex:1500, pointerEvents:'none'});
+  document.body.appendChild(c);
+  const ctx = c.getContext('2d'); let W,H; const rs=[]; const N=80;
+  function resize(){ W= c.width = innerWidth; H= c.height = innerHeight; }
+  addEventListener('resize', resize); resize();
+  for(let i=0;i<N;i++){ rs.push({x:Math.random()*W, y:-20-Math.random()*H, v:1+Math.random()*3, s:4+Math.random()*6, r:Math.random()*6}); }
+  let t=0, id=0;
+  (function loop(){
+    ctx.clearRect(0,0,W,H);
+    for(const p of rs){
+      p.y += p.v; p.x += Math.sin((t+p.y)/30); p.r += 0.05;
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.r);
+      ctx.fillStyle = `hsl(${(p.y/3+t)%360},90%,60%)`;
+      ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s);
+      ctx.restore();
+    }
+    t++; id = requestAnimationFrame(loop);
+    if(t>180){ cancelAnimationFrame(id); c.remove(); }
+  })();
+
+  // ラウンド勝敗の画像オーバーレイ
+  if (ROUND_VIEW_STATE === "win") {
+    showFxImage(FX_ROUND_WIN);
+  } else if (ROUND_VIEW_STATE === "lose") {
+    showFxImage(FX_ROUND_LOSE);
+  }
+})();
+</script>
+"""
+    return bootstrap_page("ラウンド結果", body + script_vars + script_fx)
 
 @app.get('/next/<room_id>')
 def next_round(room_id):
@@ -1298,7 +1392,73 @@ def finish_match(room_id):
     del rooms[room_id]
     return bootstrap_page("マッチ終了", f"<div class='alert alert-info'>{msg}</div><a class='btn btn-primary' href='{url_for('index')}'>ホームへ</a>")
 
+#
 # ====== アクション処理 ======
+
+# --- Devotion Offer ---
+def handle_devotion_offer(room, pid):
+    # 二重職：献身の候補を2つ提示（説明つき）
+    if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
+        return push_and_back(room, pid, "（このルームでは献身は無効です）")
+    if room['devotion_used'][pid]:
+        return push_and_back(room, pid, "（このラウンドは既に献身を使っています）")
+
+    # 既に持っているロールは候補から除外
+    owned = set([room['role_main'][pid], room['role_extra'][pid]])
+    pool = [k for k in ROLES.keys() if k not in owned]
+    if len(pool) < 2:
+        pool = list(ROLES.keys())
+
+    picks = random.sample(pool, 2)
+    room['devotion_offers'][pid] = set(picks)
+
+    body = f"""
+<div class="card"><div class="card-header">二重職：献身</div><div class="card-body">
+  <p class="mb-2">候補から<strong>1つ</strong>選んで取得します。</p>
+  <p class="small text-warning mb-3">代償：今ターン終了／予想とヒントにCT1付与／info上限-2（このラウンド）</p>
+  <form method="post">
+    <input type="hidden" name="action" value="devotion_pick">
+    <div class="form-check mb-2">
+      <input class="form-check-input" type="radio" name="pick" id="dev_pick1" value="{picks[0]}" required>
+      <label class="form-check-label" for="dev_pick1"><span class="badge bg-secondary">{role_label(picks[0])}</span> — {role_desc(picks[0])}</label>
+    </div>
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="radio" name="pick" id="dev_pick2" value="{picks[1]}">
+      <label class="form-check-label" for="dev_pick2"><span class="badge bg-secondary">{role_label(picks[1])}</span> — {role_desc(picks[1])}</label>
+    </div>
+    <button class="btn btn-primary">このロールを得る</button>
+    <a class="btn btn-outline-light ms-2" href="{url_for('play', room_id=get_current_room_id())}">戻る</a>
+  </form>
+</div></div>
+"""
+    return bootstrap_page("献身：ロール選択", body)
+
+# --- Devotion Pick ---
+def handle_devotion_pick(room, pid, pick):
+    # 候補から選択 → 取得し、代償を適用して即ターン終了
+    if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
+        return push_and_back(room, pid, "（このルームでは献身は無効です）")
+
+    offers = room['devotion_offers'].get(pid)
+    if not offers or pick not in offers:
+        return push_and_back(room, pid, "⚠ 献身の選択肢が有効ではありません。")
+
+    room['role_extra'][pid] = pick
+    room['devotion_used'][pid] = True
+    room['devotion_offers'][pid] = None
+
+    push_log(room, f"{room['pname'][pid]} が 献身として『{role_label(pick)}』を獲得 — {role_desc(pick)}")
+
+    # 代償：予想＆ヒントのCTを最低1に引き上げ、info上限-2（get_info_maxで反映）
+    room['guess_ct'][pid] = max(room['guess_ct'][pid], 1)
+    room['hint_ct'][pid] = max(room['hint_ct'][pid], 1)
+    room['devotion_info_penalty'][pid] = 2
+    push_log(room, "（献身の代償：このターン終了／g&amp;hにCT1／info上限-2）")
+
+    # 今ターン終了（相手へ）
+    switch_turn(room, pid)
+    return redirect_play_with_pid(get_current_room_id(), pid)
+
 def _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None):
     opp = 2 if pid == 1 else 1
     opp_secret = room['secret'][opp]
@@ -1521,10 +1681,31 @@ def handle_hint(room, pid, form):
 
     if has_bluff_flag:
         if decision == 'believe':
-            push_log(room, f"{myname} は 提示ヒント（{room['bluff'][opp]['value']}）を受け入れた")
+            # プレイヤーはブラフを「信じる」→ このターンのヒントは
+            # ブラフの種類・値として扱い、在庫（available_hints）も消費する
+            fake = room['bluff'][opp] or {}
+            ftype = fake.get('type')
+            fval  = fake.get('value')
+            # 在庫から該当種類を消費（存在すれば）
+            stock = room['available_hints'][pid]
+            if ftype in stock:
+                stock.remove(ftype)
+
+            # ログ（ブラフ値として提示されたことを明示）
+            if ftype in ('和','差','積'):
+                push_log(room, f"{myname} は 提示ヒント（{fval}）を受け入れた → h（ヒント取得）{ftype}＝{fval}")
+            else:
+                # 種類が不明/異常でも値は表示（安全側）
+                push_log(room, f"{myname} は 提示ヒント（{fval}）を受け入れた → h（ヒント取得）＝{fval}")
+
+            # ブラフは消費
             room['bluff'][opp] = None
+
+            # ブラフ判定に失敗して以降のCTペナルティが有効なら反映
             if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
                 room['hint_ct'][pid] = 1
+
+            # ターン終了
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
         else:
@@ -2097,29 +2278,27 @@ def handle_devotion_offer(room, pid):
     return bootstrap_page("献身の選択", body)
 
 def handle_devotion_pick(room, pid, pick):
-    """献身の決定処理：選択したロールを extra として付与し、代償を適用してターン終了。"""
+    # 献身：候補2から1つ取得し、代償を適用（今ターン終了／g&hにCT1／info上限-2）
     if not (room['rules'].get('devotion', True) and room['rules'].get('roles', True)):
         return push_and_back(room, pid, "（このルームでは献身は無効です）")
-    if room['devotion_used'][pid]:
-        return push_and_back(room, pid, "（このラウンドでは既に献身を使っています）")
-    offers = room['devotion_offers'][pid]
+
+    offers = room['devotion_offers'].get(pid)
     if not offers or pick not in offers:
-        return push_and_back(room, pid, "（献身の候補が無効です。最初からやり直してください）")
+        return push_and_back(room, pid, "⚠ 献身の選択肢が有効ではありません。")
 
-    # 付与
+    # 取得
     room['role_extra'][pid] = pick
-    room['devotion_used'][pid] = True
     room['devotion_offers'][pid] = None
+    room['devotion_used'][pid] = True
+    push_log(room, f"{room['pname'][pid]} が 献身として『{role_label(pick)}』を獲得 — {role_desc(pick)}")
 
-    # 代償：今ターン終了／g,h にCT1／info上限 -2（このラウンド）
+    # 代償：g/h の CT を最低1に引き上げ、info 上限 -2（get_info_max で反映）
     room['guess_ct'][pid] = max(room['guess_ct'][pid], 1)
     room['hint_ct'][pid] = max(room['hint_ct'][pid], 1)
-    room['devotion_info_penalty'][pid] = min( (room['devotion_info_penalty'][pid] or 0) + 2, 10 )
+    room['devotion_info_penalty'][pid] = 2
+    push_log(room, "（献身の代償：このターン終了／g&hにCT1／info上限-2）")
 
-    myname = room['pname'][pid]
-    push_log(room, f"{myname} は 献身 により <span class='value'>{ROLES[pick]}</span> を得た（今ターン終了／g,hはCT1／info上限-2）")
-
-    # ターン交代
+    # 今ターン終了
     switch_turn(room, pid)
     return redirect_play_with_pid(get_current_room_id(), pid)
 
