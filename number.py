@@ -264,13 +264,29 @@ def bootstrap_page(title, body_html):
         change:      "/static/sfx/change.mp3",
       };
 
-      // --- image assets for bluff/lie judgement (PNG/JPG/JPEG fallback) ---
-      const FX_IMG_SUCCESS = ["/static/img/bluff_success.png", "/static/img/bluff_success.jpg", "/static/img/bluff_success.jpeg"]; // 黒背景のスリム
-      const FX_IMG_FAIL    = ["/static/img/bluff_fail.png",    "/static/img/bluff_fail.jpg",    "/static/img/bluff_fail.jpeg"];    // 茶色背景のほっちゃり
+      // --- image assets for bluff/lie judgement (Jinja url_for + PNG/JPG/JPEG fallback) ---
+      const FX_IMG_SUCCESS = [
+        "{{ url_for('static', filename='img/bluff_success.png') }}",
+        "{{ url_for('static', filename='img/bluff_success.jpg') }}",
+        "{{ url_for('static', filename='img/bluff_success.jpeg') }}"
+      ]; // 黒背景のスリム
+      const FX_IMG_FAIL = [
+        "{{ url_for('static', filename='img/bluff_fail.png') }}",
+        "{{ url_for('static', filename='img/bluff_fail.jpg') }}",
+        "{{ url_for('static', filename='img/bluff_fail.jpeg') }}"
+      ]; // 茶色背景のほっちゃり
 
-      // --- image assets for round result (win/lose) (PNG/JPG/JPEG fallback) ---
-      const FX_ROUND_WIN  = ["/static/img/round_win.png",  "/static/img/round_win.jpg",  "/static/img/round_win.jpeg"];  // カラフル
-      const FX_ROUND_LOSE = ["/static/img/round_lose.png", "/static/img/round_lose.jpg", "/static/img/round_lose.jpeg"]; // ほぼ白黒
+      // --- image assets for round result (win/lose) (Jinja url_for + PNG/JPG/JPEG fallback) ---
+      const FX_ROUND_WIN = [
+        "{{ url_for('static', filename='img/round_win.png') }}",
+        "{{ url_for('static', filename='img/round_win.jpg') }}",
+        "{{ url_for('static', filename='img/round_win.jpeg') }}"
+      ]; // カラフル
+      const FX_ROUND_LOSE = [
+        "{{ url_for('static', filename='img/round_lose.png') }}",
+        "{{ url_for('static', filename='img/round_lose.jpg') }}",
+        "{{ url_for('static', filename='img/round_lose.jpeg') }}"
+      ]; // ほぼ白黒
 
       function playSfx(key, vol=0.55){
         const src = SFX[key];
@@ -308,14 +324,14 @@ def bootstrap_page(title, body_html):
         img.onerror = () => {
           i++;
           if (i < urls.length) {
-            img.src = urls[i];
+            img.src = urls[i] + "?v=" + Date.now();
           } else {
             try { wrap.remove(); } catch(_){}
             // すべての候補が失敗したらユーザーに通知
             try { toast("画像ファイルが見つかりません（" + urls.map(u=>u.split('/').pop()).join(' / ') + "）"); } catch(_){}
           }
         };
-        img.src = urls[0];
+        img.src = urls[0] + "?v=" + Date.now();
       }
                                         (function(){
         // 最後のログ行を取得（fxの有無で分岐）
