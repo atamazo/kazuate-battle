@@ -291,7 +291,7 @@ def bootstrap_page(title, body_html):
         setTimeout(()=>document.body.classList.remove("screen-shake"), 380);
       }
 
-        function showFxImage(urlOrList){
+      function showFxImage(urlOrList){
         const urls = Array.isArray(urlOrList) ? urlOrList : [urlOrList];
         if(!urls.length) return;
 
@@ -301,22 +301,23 @@ def bootstrap_page(title, body_html):
 
         const img = new Image();
         img.onload = () => {
-            wrap.appendChild(img);
-            document.body.appendChild(wrap);
-            setTimeout(()=> wrap.remove(), 1500);
+          wrap.appendChild(img);
+          document.body.appendChild(wrap);
+          setTimeout(()=> wrap.remove(), 1500);
         };
         img.onerror = () => {
-            i++;
-            if (i < urls.length) {
+          i++;
+          if (i < urls.length) {
             img.src = urls[i];
-            } else {
+          } else {
             try { wrap.remove(); } catch(_){}
-            }
+            // すべての候補が失敗したらユーザーに通知
+            try { toast("画像ファイルが見つかりません（" + urls.map(u=>u.split('/').pop()).join(' / ') + "）"); } catch(_){}
+          }
         };
         img.src = urls[0];
-        }
-
-      (function(){
+      }
+                                        (function(){
         // 最後のログ行を取得（fxの有無で分岐）
         const lastLi = document.querySelector(".log-box ol li:last-child");
         if(!lastLi) return;
@@ -352,6 +353,51 @@ def bootstrap_page(title, body_html):
 </body>
 </html>
 """, title=title, body=body_html, NUM_MIN=NUM_MIN, NUM_MAX=NUM_MAX, HIDDEN_MIN=HIDDEN_MIN, HIDDEN_MAX=HIDDEN_MAX)
+# ===== 画像アセット診断ルート =====
+
+@app.get('/debug/assets')
+def debug_assets():
+    base = os.path.join(app.root_path, 'static', 'img')
+    names = [
+        ('bluff_success', 'ブラフ/嘘だ 成功（黒・スリム）'),
+        ('bluff_fail',    'ブラフ/嘘だ 失敗（茶・ぽっちゃり）'),
+        ('round_win',     'ラウンド勝利（カラフル）'),
+        ('round_lose',    'ラウンド敗北（白黒）'),
+    ]
+    exts = ['png', 'jpg', 'jpeg']
+    rows = []
+    for key, label in names:
+        found = None
+        for ext in exts:
+            p = os.path.join(base, f"{key}.{ext}")
+            if os.path.exists(p):
+                found = f"{key}.{ext}"
+                break
+        if found:
+            url = f"/static/img/{found}"
+            rows.append(f"<tr><td><code>{key}</code></td><td>{label}</td><td><span class='badge bg-success'>OK</span></td><td><a href='{url}' target='_blank'>{url}</a></td><td><img src='{url}' style='max-height:120px'></td></tr>")
+        else:
+            trial = ' / '.join(f"{key}.{e}" for e in exts)
+            rows.append(f"<tr><td><code>{key}</code></td><td>{label}</td><td><span class='badge bg-danger'>NOT FOUND</span></td><td>/static/img/{trial}</td><td>—</td></tr>")
+
+    body = f"""
+<div class='card'>
+  <div class='card-header'>画像アセット診断</div>
+  <div class='card-body'>
+    <p class='mb-2'>下表が <code>{base}</code> にあるかを確認します。見つからない場合は、該当ファイル名で配置してください。</p>
+    <div class='table-responsive'>
+      <table class='table table-sm table-dark align-middle'>
+        <thead><tr><th>キー</th><th>説明</th><th>状態</th><th>URL</th><th>プレビュー</th></tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </div>
+    <a class='btn btn-outline-light' href='{url_for('index')}'>ホームへ</a>
+  </div>
+</div>
+"""
+    return bootstrap_page('画像デバッグ', body)
+
+
 
 def init_room(allow_negative: bool, target_points: int, rules=None):
     if rules is None:
