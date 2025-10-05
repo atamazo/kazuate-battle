@@ -1,5 +1,5 @@
 # number.py
-from flask import Flask, request, redirect, url_for, render_template_string, session, abort, jsonify
+from flask import Flask, request, redirect, url_for, render_template_string, session, abort, jsonify, Response
 import random, string, os
 
 app = Flask(__name__)
@@ -60,6 +60,48 @@ def fx_markup(key, shout=None):
         attr += f" data-shout='{shout}'"
     return f"<span class='fx'{attr}></span>"
 
+# 画像アセット（拡張子の実在確認付き）
+def fx_img_urls(key: str):
+    base = os.path.join(app.root_path, 'static', 'img')
+    urls = []
+    # 実在する拡張子のみ列挙
+    for ext in ('png', 'jpg', 'jpeg', 'PNG', 'JPG', 'JPEG'):
+        p = os.path.join(base, f"{key}.{ext}")
+        if os.path.exists(p):
+            urls.append(url_for('static', filename=f"img/{key}.{ext}"))
+    # 1つも見つからなければプレースホルダ（SVG）を最後の候補として返す
+    if not urls:
+        urls.append(url_for('fx_placeholder', key=key))
+    return urls
+
+# プレースホルダ画像（SVG）を返すルート
+@app.get('/fx_placeholder/<key>')
+def fx_placeholder(key):
+    label_map = {
+        'bluff_success': 'Bluff/嘘だ 成功',
+        'bluff_fail':    'Bluff/嘘だ 失敗',
+        'round_win':     'ラウンド勝利',
+        'round_lose':    'ラウンド敗北',
+    }
+    label = label_map.get(key, key)
+    svg = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640">
+      <defs>
+        <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%" stop-color="#1f2937"/>
+          <stop offset="100%" stop-color="#111827"/>
+        </linearGradient>
+      </defs>
+      <rect width="640" height="640" fill="url(#g)"/>
+      <g font-family="system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" fill="#f9fafb" text-anchor="middle">
+        <text x="320" y="300" font-size="36" fill="#f472b6">{label}</text>
+        <text x="320" y="360" font-size="18" fill="#e5e7eb">placeholder / static/img に画像を置くと自動で差し替わります</text>
+        <rect x="220" y="410" width="200" height="60" rx="10" ry="10" fill="#374151" />
+        <text x="320" y="448" font-size="20" fill="#fde68a">{key}.(png|jpg|jpeg)</text>
+      </g>
+    </svg>"""
+    return Response(svg, mimetype='image/svg+xml')
+
 # ====== ユーティリティ ======
 def get_info_max(room, pid):
     base = room.get('info_max', {}).get(pid, INFO_MAX_DEFAULT)
@@ -104,6 +146,11 @@ def eff_ranges(allow_negative: bool):
     return NUM_MIN, NUM_MAX, HIDDEN_MIN, HIDDEN_MAX
 
 def bootstrap_page(title, body_html):
+    # FX images: 実在する拡張子をサーバ側で解決
+    FX_BS = fx_img_urls('bluff_success')
+    FX_BF = fx_img_urls('bluff_fail')
+    FX_RW = fx_img_urls('round_win')
+    FX_RL = fx_img_urls('round_lose')
 
     return render_template_string("""
 <!doctype html>
@@ -264,29 +311,11 @@ def bootstrap_page(title, body_html):
         change:      "/static/sfx/change.mp3",
       };
 
-      // --- image assets for bluff/lie judgement (Jinja url_for + PNG/JPG/JPEG fallback) ---
-      const FX_IMG_SUCCESS = [
-        "{{ url_for('static', filename='img/bluff_success.png') }}",
-        "{{ url_for('static', filename='img/bluff_success.jpg') }}",
-        "{{ url_for('static', filename='img/bluff_success.jpeg') }}"
-      ]; // 黒背景のスリム
-      const FX_IMG_FAIL = [
-        "{{ url_for('static', filename='img/bluff_fail.png') }}",
-        "{{ url_for('static', filename='img/bluff_fail.jpg') }}",
-        "{{ url_for('static', filename='img/bluff_fail.jpeg') }}"
-      ]; // 茶色背景のほっちゃり
-
-      // --- image assets for round result (win/lose) (Jinja url_for + PNG/JPG/JPEG fallback) ---
-      const FX_ROUND_WIN = [
-        "{{ url_for('static', filename='img/round_win.png') }}",
-        "{{ url_for('static', filename='img/round_win.jpg') }}",
-        "{{ url_for('static', filename='img/round_win.jpeg') }}"
-      ]; // カラフル
-      const FX_ROUND_LOSE = [
-        "{{ url_for('static', filename='img/round_lose.png') }}",
-        "{{ url_for('static', filename='img/round_lose.jpg') }}",
-        "{{ url_for('static', filename='img/round_lose.jpeg') }}"
-      ]; // ほぼ白黒
+      // --- image assets for bluff/lie judgement (実在ファイルのみ) ---
+      const FX_IMG_SUCCESS = {{ FX_BS | tojson }}; // 実在ファイルのみ
+      const FX_IMG_FAIL    = {{ FX_BF | tojson }};
+      const FX_ROUND_WIN   = {{ FX_RW | tojson }};
+      const FX_ROUND_LOSE  = {{ FX_RL | tojson }};
 
       function playSfx(key, vol=0.55){
         const src = SFX[key];
@@ -368,7 +397,9 @@ def bootstrap_page(title, body_html):
   </div>
 </body>
 </html>
-""", title=title, body=body_html, NUM_MIN=NUM_MIN, NUM_MAX=NUM_MAX, HIDDEN_MIN=HIDDEN_MIN, HIDDEN_MAX=HIDDEN_MAX)
+""", title=title, body=body_html, NUM_MIN=NUM_MIN, NUM_MAX=NUM_MAX, HIDDEN_MIN=HIDDEN_MIN, HIDDEN_MAX=HIDDEN_MAX
+    , FX_BS=FX_BS, FX_BF=FX_BF, FX_RW=FX_RW, FX_RL=FX_RL
+)
 # ===== 画像アセット診断ルート =====
 
 @app.get('/debug/assets')
@@ -394,7 +425,17 @@ def debug_assets():
             rows.append(f"<tr><td><code>{key}</code></td><td>{label}</td><td><span class='badge bg-success'>OK</span></td><td><a href='{url}' target='_blank'>{url}</a></td><td><img src='{url}' style='max-height:120px'></td></tr>")
         else:
             trial = ' / '.join(f"{key}.{e}" for e in exts)
-            rows.append(f"<tr><td><code>{key}</code></td><td>{label}</td><td><span class='badge bg-danger'>NOT FOUND</span></td><td>/static/img/{trial}</td><td>—</td></tr>")
+            placeholder = url_for('fx_placeholder', key=key)
+            rows.append(
+                f"<tr>"
+                f"<td><code>{key}</code></td>"
+                f"<td>{label}</td>"
+                f"<td><span class='badge bg-warning text-dark'>PLACEHOLDER</span></td>"
+                f"<td><a href='{placeholder}' target='_blank'>{placeholder}</a>"
+                f"<div class='small text-muted'>期待される実ファイル: /static/img/{trial}</div></td>"
+                f"<td><img src='{placeholder}' style='max-height:120px'></td>"
+                f"</tr>"
+            )
 
     body = f"""
 <div class='card'>
