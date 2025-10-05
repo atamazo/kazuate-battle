@@ -1525,6 +1525,11 @@ def handle_devotion_pick(room, pid, pick):
     room['devotion_info_penalty'][pid] = 2
     push_log(room, "（献身の代償：このターン終了／g&amp;hにCT1／info上限-2）")
 
+    # 即時CTを付与（学者のヒントCTは無効化仕様のため付与しない）
+    if not has_role(room, pid, 'Scholar'):
+        apply_ct(room, pid, 'hint_ct', 1)
+    apply_ct(room, pid, 'guess_ct', 1)
+
     # 今ターン終了（相手へ）
     switch_turn(room, pid)
     return redirect_play_with_pid(get_current_room_id(), pid)
@@ -1664,8 +1669,12 @@ def handle_hint(room, pid, form):
         if allow_choose_now and not has_role(room, pid, 'Scholar'):
             room['hint_choice_available'][pid] = False
         _hint_once(room, pid, chose_by_user=allow_choose_now, silent=False, chosen_type=choose_type if allow_choose_now else None)
-        if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-            apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
+        # ヒント取得後は常にCT1（学者は例外）。ペナルティ中なら長い方を採用
+        if not has_role(room, pid, 'Scholar'):
+            ct_len = 1
+            if room['hint_penalty_active'][pid]:
+                ct_len = max(ct_len, room.get('hint_penalty_len', {}).get(pid, 1))
+            apply_ct(room, pid, 'hint_ct', ct_len)
         switch_turn(room, pid)
         return redirect_play_with_pid(get_current_room_id(), pid)
 
@@ -1771,10 +1780,12 @@ def handle_hint(room, pid, form):
             # ブラフは消費
             room['bluff'][opp] = None
 
-            # ブラフ判定に失敗して以降のCTペナルティが有効なら反映
-            if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-                apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
-            # ターン終了
+            # ヒント受領扱い：常にCT1（学者は例外）。ペナルティ中なら長い方を採用
+            if not has_role(room, pid, 'Scholar'):
+                ct_len = 1
+                if room['hint_penalty_active'][pid]:
+                    ct_len = max(ct_len, room.get('hint_penalty_len', {}).get(pid, 1))
+                apply_ct(room, pid, 'hint_ct', ct_len)
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
         else:
@@ -1782,8 +1793,12 @@ def handle_hint(room, pid, form):
             _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None)
             _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None)
             room['bluff'][opp] = None
-            if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-                apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
+            # 本物ヒント×2後：常にCT1（学者は例外）。ペナルティ中なら長い方を採用
+            if not has_role(room, pid, 'Scholar'):
+                ct_len = 1
+                if room['hint_penalty_active'][pid]:
+                    ct_len = max(ct_len, room.get('hint_penalty_len', {}).get(pid, 1))
+                apply_ct(room, pid, 'hint_ct', ct_len)
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
     else:
@@ -1797,6 +1812,10 @@ def handle_hint(room, pid, form):
                 room['hint_penalty_len'][pid] = 1
                 push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT1）" + fx_markup('bluff_ng','ぐぬぬ…'))
             room['hint_preview'][pid] = None
+            # ブラフ指摘失敗でも、次の自分のヒントは最低CT1（学者以外）
+            if not has_role(room, pid, 'Scholar'):
+                ct_len = max(1, room.get('hint_penalty_len', {}).get(pid, 1))
+                apply_ct(room, pid, 'hint_ct', ct_len)
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
         else:
@@ -1804,8 +1823,12 @@ def handle_hint(room, pid, form):
             if allow_choose_now and not has_role(room, pid, 'Scholar'):
                 room['hint_choice_available'][pid] = False
             _hint_once(room, pid, chose_by_user=allow_choose_now, silent=False, chosen_type=choose_type if allow_choose_now else None)
-            if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-                apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
+            # ヒント取得後は常にCT1（学者は例外）。ペナルティ中なら長い方を採用
+            if not has_role(room, pid, 'Scholar'):
+                ct_len = 1
+                if room['hint_penalty_active'][pid]:
+                    ct_len = max(ct_len, room.get('hint_penalty_len', {}).get(pid, 1))
+                apply_ct(room, pid, 'hint_ct', ct_len)
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
 
