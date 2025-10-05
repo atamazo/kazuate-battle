@@ -210,10 +210,15 @@ def bootstrap_page(title, body_html):
       animation: fadeInFx .15s ease-out;
     }
     .fx-img-overlay img {
-      max-width: min(60vw, 520px);
-      max-height: min(60vh, 520px);
-      border-radius: .5rem;
-      box-shadow: 0 8px 28px rgba(0,0,0,.55);
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain; /* 画像全体を表示（トリミング無し） */
+      border-radius: 0;
+      box-shadow: none;
+      display: block;
+      pointer-events: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
   </style>
 </head>
@@ -344,11 +349,19 @@ def bootstrap_page(title, body_html):
         const wrap = document.createElement("div");
         wrap.className = "fx-img-overlay";
 
+        // スクロールを一時的に無効化（フルスクリーン中のズレ防止）
+        const prevOverflow = document.documentElement.style.overflow;
+        document.documentElement.style.overflow = 'hidden';
+
         const img = new Image();
         img.onload = () => {
           wrap.appendChild(img);
           document.body.appendChild(wrap);
-          setTimeout(()=> wrap.remove(), 1500);
+          setTimeout(()=> {
+            wrap.remove();
+            // スクロールを元に戻す
+            document.documentElement.style.overflow = prevOverflow || '';
+          }, 1500);
         };
         img.onerror = () => {
           i++;
@@ -356,6 +369,8 @@ def bootstrap_page(title, body_html):
             img.src = urls[i] + "?v=" + Date.now();
           } else {
             try { wrap.remove(); } catch(_){}
+            // スクロールを元に戻す
+            document.documentElement.style.overflow = prevOverflow || '';
             // すべての候補が失敗したらユーザーに通知
             try { toast("画像ファイルが見つかりません（" + urls.map(u=>u.split('/').pop()).join(' / ') + "）"); } catch(_){}
           }
