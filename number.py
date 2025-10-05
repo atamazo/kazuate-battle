@@ -4,12 +4,10 @@ import random, string, os
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "imigawakaranai")
-# ローカル開発ではHTTPのため、Secureクッキーを無効化（本番は環境変数で切替推奨）
 app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=False
 )
-
 # ====== 定数 ======
 NUM_MIN = 1
 NUM_MAX = 50
@@ -106,6 +104,7 @@ def eff_ranges(allow_negative: bool):
     return NUM_MIN, NUM_MAX, HIDDEN_MIN, HIDDEN_MAX
 
 def bootstrap_page(title, body_html):
+
     return render_template_string("""
 <!doctype html>
 <html lang="ja">
@@ -265,15 +264,13 @@ def bootstrap_page(title, body_html):
         change:      "/static/sfx/change.mp3",
       };
 
-      // --- image assets for bluff/lie judgement ---
-      // 置き場所の想定: /static/img/bluff_success.png, /static/img/bluff_fail.png
-      const FX_IMG_SUCCESS = "/static/img/bluff_success.png"; // 黒背景のスリム
-      const FX_IMG_FAIL    = "/static/img/bluff_fail.png";    // 茶色背景のほっちゃり
+      // --- image assets for bluff/lie judgement (PNG/JPG/JPEG fallback) ---
+      const FX_IMG_SUCCESS = ["/static/img/bluff_success.png", "/static/img/bluff_success.jpg", "/static/img/bluff_success.jpeg"]; // 黒背景のスリム
+      const FX_IMG_FAIL    = ["/static/img/bluff_fail.png",    "/static/img/bluff_fail.jpg",    "/static/img/bluff_fail.jpeg"];    // 茶色背景のほっちゃり
 
-      // --- image assets for round result (win/lose) ---
-      // 置き場所の想定: /static/img/round_win.png, /static/img/round_lose.png
-      const FX_ROUND_WIN  = "/static/img/round_win.png";  // カラフルな方
-      const FX_ROUND_LOSE = "/static/img/round_lose.png"; // ほぼ白黒
+      // --- image assets for round result (win/lose) (PNG/JPG/JPEG fallback) ---
+      const FX_ROUND_WIN  = ["/static/img/round_win.png",  "/static/img/round_win.jpg",  "/static/img/round_win.jpeg"];  // カラフル
+      const FX_ROUND_LOSE = ["/static/img/round_lose.png", "/static/img/round_lose.jpg", "/static/img/round_lose.jpeg"]; // ほぼ白黒
 
       function playSfx(key, vol=0.55){
         const src = SFX[key];
@@ -294,16 +291,30 @@ def bootstrap_page(title, body_html):
         setTimeout(()=>document.body.classList.remove("screen-shake"), 380);
       }
 
-      function showFxImage(url){
-        if(!url) return;
+        function showFxImage(urlOrList){
+        const urls = Array.isArray(urlOrList) ? urlOrList : [urlOrList];
+        if(!urls.length) return;
+
+        let i = 0;
         const wrap = document.createElement("div");
         wrap.className = "fx-img-overlay";
+
         const img = new Image();
-        img.src = url;
-        wrap.appendChild(img);
-        document.body.appendChild(wrap);
-        setTimeout(()=> wrap.remove(), 1500);
-      }
+        img.onload = () => {
+            wrap.appendChild(img);
+            document.body.appendChild(wrap);
+            setTimeout(()=> wrap.remove(), 1500);
+        };
+        img.onerror = () => {
+            i++;
+            if (i < urls.length) {
+            img.src = urls[i];
+            } else {
+            try { wrap.remove(); } catch(_){}
+            }
+        };
+        img.src = urls[0];
+        }
 
       (function(){
         // 最後のログ行を取得（fxの有無で分岐）
@@ -838,7 +849,18 @@ def _kill_thresholds(room, trap_owner_pid):
     if has_role(room, trap_owner_pid, 'Trapper'):
         return 2, 6
     return 1, 5
-
+# --- CT（クールタイム）を自分の手番単位で正しく付与するヘルパ ---
+def apply_ct(room, pid, key, own_turns):
+    """
+    CTを「自分の手番」単位で付与する。
+    switch_turn() がターン交代ごとに全員のCTを減算する実装のため、
+    自分の手番を n 回ブロックしたい場合は 2n+1 を内部カウンタに入れる。
+    既存値より短くならないように最大値を採用する。
+    """
+    n = max(0, int(own_turns))
+    raw = 2 * n + 1
+    cur = room.get(key, {}).get(pid, 0)
+    room[key][pid] = max(cur, raw)
 # 任意: get_current_room_id
 def get_current_room_id():
     rid = session.get('room_id')
@@ -1450,8 +1472,10 @@ def handle_devotion_pick(room, pid, pick):
     push_log(room, f"{room['pname'][pid]} が 献身として『{role_label(pick)}』を獲得 — {role_desc(pick)}")
 
     # 代償：予想＆ヒントのCTを最低1に引き上げ、info上限-2（get_info_maxで反映）
-    room['guess_ct'][pid] = max(room['guess_ct'][pid], 1)
-    room['hint_ct'][pid] = max(room['hint_ct'][pid], 1)
+    room['guess_penalty_active'][pid] = True
+    room['hint_penalty_active'][pid] = True
+    room.setdefault('hint_penalty_len', {1:1, 2:1})
+    room['hint_penalty_len'][pid] = max(room['hint_penalty_len'][pid], 1)
     room['devotion_info_penalty'][pid] = 2
     push_log(room, "（献身の代償：このターン終了／g&amp;hにCT1／info上限-2）")
 
@@ -1557,7 +1581,7 @@ def handle_guess(room, pid, guess):
         set_skip(room, pid)
         push_log(room, f"{myname} が g（予想）→ {guess}（kill近接±{near_t}命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         if room['guess_penalty_active'][pid]:
-            room['guess_ct'][pid] = 1
+            apply_ct(room, pid, 'guess_ct', 1)
         switch_turn(room, pid)
         return redirect_play_with_pid(get_current_room_id(), pid)
 
@@ -1568,7 +1592,7 @@ def handle_guess(room, pid, guess):
         return redirect_play_with_pid(get_current_room_id(), pid)
 
     if room['guess_penalty_active'][pid]:
-        room['guess_ct'][pid] = 1
+        apply_ct(room, pid, 'guess_ct', 1)
     switch_turn(room, pid)
     return redirect_play_with_pid(get_current_room_id(), pid)
 
@@ -1595,7 +1619,7 @@ def handle_hint(room, pid, form):
             room['hint_choice_available'][pid] = False
         _hint_once(room, pid, chose_by_user=allow_choose_now, silent=False, chosen_type=choose_type if allow_choose_now else None)
         if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-            room['hint_ct'][pid] = 1
+            apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
         switch_turn(room, pid)
         return redirect_play_with_pid(get_current_room_id(), pid)
 
@@ -1703,8 +1727,7 @@ def handle_hint(room, pid, form):
 
             # ブラフ判定に失敗して以降のCTペナルティが有効なら反映
             if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-                room['hint_ct'][pid] = 1
-
+                apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
             # ターン終了
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
@@ -1714,17 +1737,18 @@ def handle_hint(room, pid, form):
             _hint_once(room, pid, chose_by_user=False, silent=False, chosen_type=None)
             room['bluff'][opp] = None
             if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-                room['hint_ct'][pid] = 1
+                apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
     else:
         if decision == 'accuse':
             room['hint_penalty_active'][pid] = True
+            room.setdefault('hint_penalty_len', {1:1, 2:1})
             if has_role(room, opp, 'Trickster'):
-                room['hint_ct'][pid] = 2
+                room['hint_penalty_len'][pid] = 2
                 push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT2）" + fx_markup('bluff_ng','ぐぬぬ…'))
             else:
-                room['hint_ct'][pid] = 1
+                room['hint_penalty_len'][pid] = 1
                 push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT1）" + fx_markup('bluff_ng','ぐぬぬ…'))
             room['hint_preview'][pid] = None
             switch_turn(room, pid)
@@ -1735,7 +1759,7 @@ def handle_hint(room, pid, form):
                 room['hint_choice_available'][pid] = False
             _hint_once(room, pid, chose_by_user=allow_choose_now, silent=False, chosen_type=choose_type if allow_choose_now else None)
             if room['hint_penalty_active'][pid] and not has_role(room, pid, 'Scholar'):
-                room['hint_ct'][pid] = 1
+                apply_ct(room, pid, 'hint_ct', room.get('hint_penalty_len', {}).get(pid, 1))
             switch_turn(room, pid)
             return redirect_play_with_pid(get_current_room_id(), pid)
 
@@ -2119,59 +2143,57 @@ def handle_press_skip(room, pid):
     switch_turn(room, pid)
     return redirect_play_with_pid(get_current_room_id(), pid)
 
-def handle_free_guess(room, pid, fg_val):
-    """『嘘だ！』成功時の無料予想。ゲスフラグは発動しないが、kill/info は有効。"""
-    if not room['rules'].get('decl1', True):
-        return push_and_back(room, pid, "（このルームでは一の位の宣言は無効です）")
-    if not room['free_guess_pending'][pid]:
-        return push_and_back(room, pid, "（無料予想は現在ありません）")
-
-    myname = room['pname'][pid]
+def handle_free_guess(room, pid, val):
+    """嘘だ！成功後の無料予想。
+    - ターン消費なし（自分のターンのまま）
+    - ゲスフラグ無効
+    - kill/info/近接は有効
+    - CT/サドン・プレスは発生させない
+    """
     opp = 2 if pid == 1 else 1
+    myname = room['pname'][pid]
     opponent_secret = room['secret'][opp]
 
-    # 権利を消費
+    # 1回限りの無料予想フラグを消費
     room['free_guess_pending'][pid] = False
 
-    # この推理も試行回数にカウント
-    room['tries'][pid] += 1
-
-    # 正解：勝利へ
-    if fg_val == opponent_secret:
-        push_log(room, f"{myname} が 無料予想 → {fg_val}（正解！相手は即死）" + fx_markup('guess_hit','一撃必殺！'))
+    # 正解：その場で勝利
+    if val == opponent_secret:
+        push_log(room, f"{myname} が 無料予想 → {val}（正解！相手は即死）" + fx_markup('guess_hit','一撃必殺！'))
         room['score'][pid] += 1
         room['winner'] = pid
         room['turn_serial'] += 1
         return redirect_end_with_pid(get_current_room_id(), pid)
 
-    # ゲスフラグは発動しない（スキップ）
-    # ただし、トラップ（kill/info）は有効
+    # ゲスフラグは発動しない（チェック自体を行わない）
+
+    # トラップ（kill/info/近接）は有効
     kill_vals = set(room['trap_kill'][opp]) if room['rules'].get('trap', True) else set()
     info_vals = set(room['trap_info'][opp]) if room['rules'].get('trap', True) else set()
     inst_t, near_t = _kill_thresholds(room, opp)
 
-    if any(abs(fg_val - k) <= inst_t for k in kill_vals):
-        push_log(room, f"{myname} が 無料予想 → {fg_val}（killトラップ±{inst_t}命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
+    # 即死
+    if any(abs(val - k) <= inst_t for k in kill_vals):
+        push_log(room, f"{myname} が 無料予想 → {val}（killトラップ±{inst_t}命中＝即敗北）" + fx_markup('kill_dead','木っ端微塵！'))
         room['score'][opp] += 1
         room['winner'] = opp
         room['turn_serial'] += 1
         return redirect_end_with_pid(get_current_room_id(), pid)
 
-    if fg_val in info_vals:
+    # 情報
+    if val in info_vals:
         room['pending_view'][opp] = True
         room['view_cut_index'][opp] = len(room['actions'])
-        push_log(room, f"{myname} が 無料予想 → {fg_val}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
+        push_log(room, f"{myname} が 無料予想 → {val}（情報トラップ発動）" + fx_markup('info','覗き見タイム！'))
 
-    # 近接（±near_t）でのスキップは無料予想でも有効
-    if any(abs(fg_val - k) <= near_t for k in kill_vals):
+    # 近接（次ターンスキップ付与）。ターンは切り替えない。
+    if any(abs(val - k) <= near_t for k in kill_vals):
         set_skip(room, pid)
-        push_log(room, f"{myname} が 無料予想 → {fg_val}（kill近接±{near_t}命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
-        switch_turn(room, pid)
+        push_log(room, f"{myname} が 無料予想 → {val}（kill近接±{near_t}命中：次ターンスキップ）" + fx_markup('kill_near','ヒヤッ！'))
         return redirect_play_with_pid(get_current_room_id(), pid)
 
-    # 単純なハズレ：ターン交代
-    push_log(room, f"{myname} が 無料予想 → {fg_val}（ハズレ）")
-    switch_turn(room, pid)
+    # 通常ハズレ：ターンは維持（CTやプレスも発生させない）
+    push_log(room, f"{myname} が 無料予想 → {val}（ハズレ）")
     return redirect_play_with_pid(get_current_room_id(), pid)
 
 def handle_yn(room, pid, form):
@@ -2293,8 +2315,10 @@ def handle_devotion_pick(room, pid, pick):
     push_log(room, f"{room['pname'][pid]} が 献身として『{role_label(pick)}』を獲得 — {role_desc(pick)}")
 
     # 代償：g/h の CT を最低1に引き上げ、info 上限 -2（get_info_max で反映）
-    room['guess_ct'][pid] = max(room['guess_ct'][pid], 1)
-    room['hint_ct'][pid] = max(room['hint_ct'][pid], 1)
+    room['guess_penalty_active'][pid] = True
+    room['hint_penalty_active'][pid] = True
+    room.setdefault('hint_penalty_len', {1:1, 2:1})
+    room['hint_penalty_len'][pid] = max(room['hint_penalty_len'][pid], 1)
     room['devotion_info_penalty'][pid] = 2
     push_log(room, "（献身の代償：このターン終了／g&hにCT1／info上限-2）")
 
