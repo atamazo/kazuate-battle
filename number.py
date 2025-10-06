@@ -790,6 +790,7 @@ def room_lobby(room_id):
 @app.route('/join/<room_id>/<int:player_id>', methods=['GET','POST'])
 def join(room_id, player_id):
     room = player_guard(room_id, player_id)
+    session['player_id'] = player_id
     # 既に名前があり、かつラウンド間ロビー中なら「秘密の数のみ」モード
     simple_mode = (room['pname'][player_id] is not None and room['phase'] == 'lobby' and room['secret'][player_id] is None)
 
@@ -877,6 +878,7 @@ def set_secret(room_id, player_id):
     room = player_guard(room_id, player_id)
     # セッションをプレイヤーにバインド
     session['room_id'] = room_id
+    session['player_id'] = player_id
     
     secret = get_int(request.form, 'secret', default=None,
                      min_v=room['eff_num_min'], max_v=room['eff_num_max'])
@@ -1401,6 +1403,8 @@ def play(room_id):
     script_vars = f"""
 <script>
   const mypid = {pid};
+  const ROOM_ID = "{room_id}";
+  try{{ localStorage.setItem("pid:"+ROOM_ID, String(mypid)); }}catch(_){}
   let lastSerial = {room['turn_serial']};
   const POLL_URL  = "{url_for('poll', room_id=room_id)}";
   const END_URL   = "{url_for('end_round', room_id=room_id)}?as={pid}";
@@ -1440,10 +1444,15 @@ def end_round(room_id):
     match_over = (room['score'][1] >= target) or (room['score'][2] >= target)
     # 表示者（ブラウザ側）の勝敗を判定するため、?as= からプレイヤーIDを取得
     as_pid = request.args.get('as')
+    if as_pid in ('1','2'):
+        session['player_id'] = int(as_pid)
     viewer_pid = int(as_pid) if as_pid in ('1','2') else session.get('player_id')
     view_state = 'win' if viewer_pid == winner else ('lose' if viewer_pid in (1,2) else '')
 
     log_html_full = "".join(f"<li>{e}</li>" for e in room['actions'])
+    next_url = url_for('next_round', room_id=room_id) + (f"?as={viewer_pid}" if viewer_pid in (1,2) else "")
+    play_url = url_for('play', room_id=room_id) + (f"?as={viewer_pid}" if viewer_pid in (1,2) else "")
+    finish_url = url_for('finish_match', room_id=room_id)
     body = f"""
 <div class="card mb-3">
   <div class="card-header">ラウンド {room['round_no']} の結果</div>
@@ -1455,8 +1464,8 @@ def end_round(room_id):
     <hr/>
     <div class="h6">現在スコア: {p1} {room['score'][1]} - {room['score'][2]} {p2}（先取 {target}）</div>
     <div class="mt-3">
-      {"<a class='btn btn-primary' href='" + url_for('finish_match', room_id=room_id) + "'>マッチ終了</a>" if match_over else "<a class='btn btn-primary' href='" + url_for('next_round', room_id=room_id) + "'>次のラウンドへ</a>"}
-      <a class="btn btn-outline-light ms-2" href="{url_for('play', room_id=room_id)}">対戦画面へ戻る</a>
+      {"<a class='btn btn-primary' href='" + finish_url + "'>マッチ終了</a>" if match_over else "<a class='btn btn-primary' href='" + next_url + "'>次のラウンドへ</a>"}
+      <a class="btn btn-outline-light ms-2" href="{play_url}">対戦画面へ戻る</a>
     </div>
   </div>
 </div>
@@ -1472,6 +1481,8 @@ def end_round(room_id):
     script_vars = f"""
 <script>
   const ROUND_VIEW_STATE = "{view_state}"; // 'win' | 'lose' | ''
+  const ROOM_ID = "{room_id}";
+  const ROUND_WINNER = {winner};
 </script>
 """
 
@@ -1500,12 +1511,30 @@ def end_round(room_id):
     if(t>180){ cancelAnimationFrame(id); c.remove(); }
   })();
 
-  // ラウンド勝敗の画像オーバーレイ
-  if (ROUND_VIEW_STATE === "win") {
-    showFxImage(FX_ROUND_WIN);
-  } else if (ROUND_VIEW_STATE === "lose") {
-    showFxImage(FX_ROUND_LOSE);
-  }
+  // --- ラウンド勝敗の画像オーバーレイ ---
+  // showFxImage はテンプレート下部の共通スクリプト内で定義されるため、
+  // ここでは onload 後に実行して依存関数の未定義エラーを避ける
+  window.addEventListener('load', function(){
+    try{
+      let state = ROUND_VIEW_STATE;
+      if (!state) {
+        try{
+          const stored = localStorage.getItem("pid:"+ROOM_ID);
+          if (stored === "1" || stored === "2") {
+            state = (Number(stored) === ROUND_WINNER) ? "win" : "lose";
+          }
+        }catch(_){}
+      }
+      if (state === "win") {
+        showFxImage(FX_ROUND_WIN);
+      } else if (state === "lose") {
+        showFxImage(FX_ROUND_LOSE);
+      } else {
+        // 最後の保険：どちらか不明なら勝利演出を表示
+        showFxImage(FX_ROUND_WIN);
+      }
+    }catch(_){}
+  });
 })();
 </script>
 """
