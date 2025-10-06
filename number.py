@@ -1004,6 +1004,7 @@ def play(room_id):
     as_pid = request.args.get('as')
     if as_pid in ('1','2'):
         session['room_id'] = room_id  # 部屋だけバインド。playerはURLで識別
+        session['player_id'] = int(as_pid)  # 結果画面で ?as= が落ちても勝敗画像を判定できるよう保存
 
     pid = int(as_pid) if as_pid in ('1','2') else None
     rid = session.get('room_id')
@@ -1439,7 +1440,7 @@ def end_round(room_id):
     match_over = (room['score'][1] >= target) or (room['score'][2] >= target)
     # 表示者（ブラウザ側）の勝敗を判定するため、?as= からプレイヤーIDを取得
     as_pid = request.args.get('as')
-    viewer_pid = int(as_pid) if as_pid in ('1','2') else None
+    viewer_pid = int(as_pid) if as_pid in ('1','2') else session.get('player_id')
     view_state = 'win' if viewer_pid == winner else ('lose' if viewer_pid in (1,2) else '')
 
     log_html_full = "".join(f"<li>{e}</li>" for e in room['actions'])
@@ -1883,6 +1884,12 @@ def handle_hint(room, pid, form):
             else:
                 room['hint_penalty_len'][pid] = 1
                 push_log(room, f"{myname} は ブラフだ！と指摘したが外れ（以後ヒント取得後はCT1）" + fx_markup('bluff_ng','ぐぬぬ…'))
+            # 直後の処理：ヒント行動としてCTを付与し、ターンを進める（学者はCT無効）
+            if not has_role(room, pid, 'Scholar'):
+                ct_len = max(1, room.get('hint_penalty_len', {}).get(pid, 1))
+                apply_ct(room, pid, 'hint_ct', ct_len)
+            switch_turn(room, pid)
+            return redirect_play_with_pid(get_current_room_id(), pid)
             room['hint_preview'][pid] = None
             # ブラフ指摘失敗でも、次の自分のヒントは最低CT1（学者以外）
             if not has_role(room, pid, 'Scholar'):
