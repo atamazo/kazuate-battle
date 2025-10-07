@@ -1488,8 +1488,10 @@ def end_round(room_id):
 
     script_fx = r"""
 <script>
+// === ラウンド結果演出 ===
+// 1) 紙吹雪 + 勝利SE（失敗しても無視）
 (function(){
-  try{ new Audio("/static/sfx/win.mp3").play().catch(()=>{}); }catch(_){}
+  try{ new Audio("/static/sfx/win.mp3").play().catch(_=>{}); }catch(_){}
   const c = document.createElement('canvas');
   Object.assign(c.style, {position:'fixed', inset:0, zIndex:1500, pointerEvents:'none'});
   document.body.appendChild(c);
@@ -1499,42 +1501,78 @@ def end_round(room_id):
   for(let i=0;i<N;i++){ rs.push({x:Math.random()*W, y:-20-Math.random()*H, v:1+Math.random()*3, s:4+Math.random()*6, r:Math.random()*6}); }
   let t=0, id=0;
   (function loop(){
-    ctx.clearRect(0,0,W,H);
-    for(const p of rs){
-      p.y += p.v; p.x += Math.sin((t+p.y)/30); p.r += 0.05;
-      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.r);
-      ctx.fillStyle = `hsl(${(p.y/3+t)%360},90%,60%)`;
-      ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s);
-      ctx.restore();
-    }
-    t++; id = requestAnimationFrame(loop);
-    if(t>180){ cancelAnimationFrame(id); c.remove(); }
-  })();
-
-  // --- ラウンド勝敗の画像オーバーレイ ---
-  // showFxImage はテンプレート下部の共通スクリプト内で定義されるため、
-  // ここでは onload 後に実行して依存関数の未定義エラーを避ける
-  window.addEventListener('load', function(){
     try{
-      let state = ROUND_VIEW_STATE;
-      if (!state) {
-        try{
-          const stored = localStorage.getItem("pid:"+ROOM_ID);
-          if (stored === "1" || stored === "2") {
-            state = (Number(stored) === ROUND_WINNER) ? "win" : "lose";
-          }
-        }catch(_){}
+      ctx.clearRect(0,0,W,H);
+      for(const p of rs){
+        p.y += p.v; p.x += Math.sin((t+p.y)/30); p.r += 0.05;
+        ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.r);
+        ctx.fillStyle = `hsl(${(p.y/3+t)%360},90%,60%)`;
+        ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s);
+        ctx.restore();
       }
-      if (state === "win") {
-        showFxImage(FX_ROUND_WIN);
-      } else if (state === "lose") {
-        showFxImage(FX_ROUND_LOSE);
-      } else {
-        // 最後の保険：どちらか不明なら勝利演出を表示
-        showFxImage(FX_ROUND_WIN);
-      }
+      t++; id = requestAnimationFrame(loop);
+      if(t>180){ cancelAnimationFrame(id); c.remove(); }
+    }catch(e){ try{ cancelAnimationFrame(id); c.remove(); }catch(_){} }
+  })();
+})();
+
+// 2) 勝敗画像の強制表示。
+//    依存関数 showFxImage が未定義でもフォールバック表示を用意。
+(function(){
+  function fallbackShow(list){
+    try{
+      var urls = Array.isArray(list)? list : [list];
+      var wrap = document.createElement('div');
+      wrap.className = 'fx-img-overlay';
+      var img = new Image();
+      img.onload = function(){ wrap.appendChild(img); document.body.appendChild(wrap); setTimeout(()=>wrap.remove(), 1500); };
+      img.onerror = function(){ /* 何もしない（静かに諦め）*/ };
+      img.src = urls[0];
     }catch(_){}
-  });
+  }
+
+  function pickState(){
+    var state = (typeof ROUND_VIEW_STATE !== 'undefined') ? ROUND_VIEW_STATE : '';
+    if (!state){
+      try{
+        var stored = localStorage.getItem("pid:"+ROOM_ID);
+        if (stored === '1' || stored === '2') state = (Number(stored) === ROUND_WINNER) ? 'win' : 'lose';
+      }catch(_){ }
+    }
+    return state || 'win'; // 不明なら勝利扱い
+  }
+
+  function pickList(state){
+    try{
+      var l = (state === 'lose') ? FX_ROUND_LOSE : FX_ROUND_WIN;
+      if (!Array.isArray(l) || l.length===0) throw new Error('empty');
+      return l;
+    }catch(_){
+      // サーバ側プレースホルダにフォールバック
+      return [ (state==='lose'? '/fx_placeholder/round_lose' : '/fx_placeholder/round_win') ];
+    }
+  }
+
+  function show(){
+    try{
+      var state = pickState();
+      var list  = pickList(state);
+      if (typeof showFxImage === 'function'){
+        showFxImage(list);
+      } else {
+        fallbackShow(list);
+      }
+    }catch(e){
+      try{ console.warn('round-fx error', e); }catch(_){}
+    }
+  }
+
+  // DOM構築直後に呼ぶ（画像ローダは window.onload を待つ必要なし）
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', show);
+  } else {
+    show();
+  }
 })();
 </script>
 """
