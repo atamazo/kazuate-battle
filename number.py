@@ -1404,7 +1404,7 @@ def play(room_id):
 <script>
   const mypid = {pid};
   const ROOM_ID = "{room_id}";
-  try{{ localStorage.setItem("pid:"+ROOM_ID, String(mypid)); }}catch(_){}
+  try{{ localStorage.setItem("pid:"+ROOM_ID, String(mypid)); }}catch(_){{}}
   let lastSerial = {room['turn_serial']};
   const POLL_URL  = "{url_for('poll', room_id=room_id)}";
   const END_URL   = "{url_for('end_round', room_id=room_id)}?as={pid}";
